@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+# never commit financial data or tokens - data lives in DATA_DIR on the server
+data/
+state.json
+state-snapshots/
+transactions.json
+accounts.json
+fetch-meta.json
+balance-history.json
+balance-log.json
