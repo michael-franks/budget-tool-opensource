@@ -527,7 +527,7 @@ app.post('/api/push/unsubscribe', (req, res) => {
 });
 app.post('/api/push/test', async (req, res) => {
   if (!pushConfigured()) return res.status(503).json({ ok: false, error: 'push not configured' });
-  try { const sent = await sendPush({ title: 'Francs', body: 'Test notification — push is working.', url: '/', tag: 'test' }); res.json({ ok: true, sent }); }
+  try { const sent = await sendPush({ title: 'Notification test', body: 'Push is working — you are all set.', url: '/', tag: 'test' }); res.json({ ok: true, sent }); }
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
