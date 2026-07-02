@@ -10,9 +10,21 @@
 :root {
   --bg: #f5f6f8; --surface: #fff; --border: #e8eaed; --text: #1a1a1a;
   --muted: #6b7280; --accent: #2563eb; --green: #16a34a; --red: #dc2626;
-  --yellow: #f59e0b; --green-bg: #f0fdf4; --red-bg: #fef2f2; --yellow-bg: #fffbeb;
+  --yellow: #f59e0b; --green-bg: var(--green-bg); --red-bg: #fef2f2; --yellow-bg: var(--yellow-bg);
   --radius: 10px; --radius-sm: 6px;
   --shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+  --chart-grid: rgba(120,130,145,0.18);
+}
+/* Dark mode: follow the OS setting. Overrides the palette variables; surfaces and chart grids
+   below use these vars (not hardcoded light hex) so there are no light islands. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --surface: #191c22; --border: #2c313b; --text: #e8eaed;
+    --muted: #9aa1ad; --accent: #5b93f6; --green: #34d399; --red: #f2686c;
+    --yellow: #fbbf24; --green-bg: #10231b; --red-bg: #2a1618; --yellow-bg: #291f0f;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+    --chart-grid: rgba(150,160,175,0.16);
+  }
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
@@ -32,7 +44,7 @@ nav .priv-toggle .switch input:checked + .slider { background: var(--accent); }
 nav .priv-toggle .switch input:checked + .slider::before { transform: translateX(16px); }
 nav button { background: none; border: none; font-size: 14px; color: var(--muted); cursor: pointer; padding: 6px 12px; border-radius: var(--radius); transition: all 0.15s; }
 nav button:hover { background: var(--border); color: var(--text); }
-nav button.active { background: var(--text); color: #fff; }
+nav button.active { background: var(--text); color: var(--bg); }
 nav button .ni { display: none; }
 nav .ni svg { width: 20px; height: 20px; display: block; }
 nav button[data-tab="settings"] { margin-left: 4px; }
@@ -57,6 +69,10 @@ nav button[data-tab="settings"] .nl { display: none; }
   .toast { bottom: 88px; }
 }
 
+/* Keyboard focus ring — shown for keyboard/AT users (:focus-visible), not on mouse click */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[role="button"] { cursor: pointer; }
+
 /* Sections */
 section { display: none; }
 section.active { display: block; }
@@ -79,13 +95,13 @@ td.positive { color: var(--green); }
 td.negative { color: var(--red); }
 
 /* Category select */
-select.cat-select { font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+select.cat-select { font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
 select.cat-select.unknown { border-color: var(--yellow); background: var(--yellow-bg); font-weight: 600; }
-.lock-btn { font-size: 11px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 4px; background: #fff; cursor: pointer; white-space: nowrap; }
-.lock-btn:hover { background: #f0fdf4; border-color: var(--green); }
-.transfer-card { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: var(--radius); padding: 16px; margin-top: 12px; }
-.transfer-card h2 { margin: 0 0 12px 0; font-size: 16px; color: #1e40af; }
-.transfer-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; background: #fff; }
+.lock-btn { font-size: 11px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
+.lock-btn:hover { background: var(--green-bg); border-color: var(--green); }
+.transfer-card { background: rgba(37,99,235,0.08); border: 1px solid rgba(37,99,235,0.25); border-radius: var(--radius); padding: 16px; margin-top: 12px; }
+.transfer-card h2 { margin: 0 0 12px 0; font-size: 16px; color: var(--accent); }
+.transfer-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; background: var(--surface); }
 .transfer-row .label { font-size: 14px; }
 .transfer-row .amount { font-size: 16px; font-weight: 700; }
 .transfer-row .from { font-size: 12px; color: var(--muted); }
@@ -108,7 +124,7 @@ select.cat-select.unknown { border-color: var(--yellow); background: var(--yello
 .cat-row:last-child { border-bottom: none; }
 .cat-name { width: 180px; flex-shrink: 0; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cat-bar-area { flex: 1; position: relative; height: 22px; min-width: 0; }
-.cat-bar-bg { position: absolute; left: 0; top: 0; bottom: 0; background: #f1f5f9; border-radius: 4px; }
+.cat-bar-bg { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(120,130,145,0.12); border-radius: 4px; }
 .cat-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
 .cat-bar-fill.under { background: #2563eb; }
 .cat-bar-fill.ontrack { background: var(--green); }
@@ -256,12 +272,12 @@ details.settings-section > summary .s-desc { font-size: 12px; font-weight: 400; 
 details.settings-section > .section-body { padding: 0 20px 20px; }
 
 /* Budget sub-cards */
-.budget-section { background: #f8f9fa; border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.budget-section { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .budget-section h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
 
 /* Grouped budget row */
 .budget-group-header { display: contents; cursor: pointer; }
-.budget-group-header > * { background: #f1f5f9; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.budget-group-header > * { background: rgba(120,130,145,0.12); padding: 6px 0; border-bottom: 1px solid var(--border); }
 .budget-group-header > *:first-child { border-radius: 4px 0 0 4px; padding-left: 4px; }
 .budget-group-header > *:last-child { border-radius: 0 4px 4px 0; }
 .budget-group-toggle { font-size: 10px; color: var(--muted); margin-right: 4px; display: inline-block; transition: transform 0.2s; }
@@ -1636,7 +1652,7 @@ function drawProjGroup(canvasId, slot, buckets, yrs, milestones) {
     ch.$milestones = mileMarks; ch.update();
   } else {
     if (_projCharts[slot]) { try { _projCharts[slot].destroy(); } catch (e) {} }
-    _projCharts[slot] = new Chart(el, { type: 'line', data: { labels, datasets }, plugins: [projMilestonePlugin], options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, animation: { duration: 300 }, layout: { padding: { top: 18 } }, plugins: { legend: { display: true, labels: { boxWidth: 10, font: { size: 10 } } }, tooltip: { callbacks: { label: c => c.dataset.label + ': ' + pTip(c.parsed.y) } } }, scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 9 }, color: '#9ca3af' } }, y: { beginAtZero: true, ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: '#f5f5f5' } } } } });
+    _projCharts[slot] = new Chart(el, { type: 'line', data: { labels, datasets }, plugins: [projMilestonePlugin], options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, animation: { duration: 300 }, layout: { padding: { top: 18 } }, plugins: { legend: { display: true, labels: { boxWidth: 10, font: { size: 10 } } }, tooltip: { callbacks: { label: c => c.dataset.label + ': ' + pTip(c.parsed.y) } } }, scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 9 }, color: '#9ca3af' } }, y: { beginAtZero: true, ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: 'rgba(120,130,145,0.18)' } } } } });
     _projCharts[slot].$milestones = mileMarks;
   }
 }
@@ -1727,7 +1743,7 @@ async function renderInvestments() {
   }).filter(p => p.y > 0);
 
   if (cashAlerts.length) {
-    html += `<div class="card" style="border:1px solid #f59e0b;background:#fffbeb;margin:0 0 14px">
+    html += `<div class="card" style="border:1px solid #f59e0b;background:var(--yellow-bg);margin:0 0 14px">
       <div style="display:flex;align-items:flex-start;gap:10px">
         <span style="font-size:20px;line-height:1">💰</span>
         <div style="flex:1">
@@ -1786,7 +1802,7 @@ async function renderInvestments() {
       if (tr) ds.push({ label: 'Trend', data: tr, borderColor: '#9ca3af', borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, fill: false });
       investmentCharts.push(new Chart(octx, {
         type: 'line', data: { datasets: ds },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { title: items => items.length ? new Date(items[0].parsed.x).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: '2-digit' }) : '', label: c => pTip(c.parsed.y) } } }, scales: { x: { type: 'linear', display: true, min: overTime[0].x, max: overTime[overTime.length - 1].x, ticks: { maxTicksLimit: 5, maxRotation: 0, autoSkip: true, font: { size: 9 }, color: '#9ca3af', callback: v => new Date(v).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }) }, grid: { display: false } }, y: { ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: '#f5f5f5' } } } }
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { title: items => items.length ? new Date(items[0].parsed.x).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: '2-digit' }) : '', label: c => pTip(c.parsed.y) } } }, scales: { x: { type: 'linear', display: true, min: overTime[0].x, max: overTime[overTime.length - 1].x, ticks: { maxTicksLimit: 5, maxRotation: 0, autoSkip: true, font: { size: 9 }, color: '#9ca3af', callback: v => new Date(v).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }) }, grid: { display: false } }, y: { ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: 'rgba(120,130,145,0.18)' } } } }
       }));
     }
   }
@@ -1960,7 +1976,7 @@ function drawMortgages() {
         responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
         animation: { duration: 350 },
         plugins: { legend: { display: true }, tooltip: { callbacks: { label: c => c.dataset.label + ': ' + pTip(c.parsed.y) } } },
-        scales: { y: { beginAtZero: true, title: { display: true, text: 'Balance owed ($)' }, ticks: { callback: pAxis }, grid: { color: '#f0f0f0' } } }
+        scales: { y: { beginAtZero: true, title: { display: true, text: 'Balance owed ($)' }, ticks: { callback: pAxis }, grid: { color: 'rgba(120,130,145,0.18)' } } }
       }
     });
   }
@@ -2378,7 +2394,7 @@ function renderPendingPanel() {
   if (!el) return;
   const list = currentPending || [];
   if (!list.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
-  const badge = '<span style="display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;color:#b45309;background:#fef3c7;border:1px solid #fde68a;border-radius:4px;padding:1px 5px;vertical-align:middle;margin-left:4px">PENDING</span>';
+  const badge = '<span style="display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;color:#b45309;background:var(--yellow-bg);border:1px solid #fde68a;border-radius:4px;padding:1px 5px;vertical-align:middle;margin-left:4px">PENDING</span>';
   el.style.display = 'block';
   el.innerHTML = `<div class="card" style="border-left:3px solid var(--yellow)">
     <h2 style="margin-bottom:4px">Pending <span style="font-weight:400;font-size:13px;color:var(--muted)">— ${list.length} recent transaction${list.length>1?'s':''} not yet posted</span></h2>
@@ -2462,8 +2478,8 @@ function renderImport() {
     const merchantKey = tx.detail.toLowerCase();
     const isLocked = store.merchants[merchantKey] && store.merchants[merchantKey].locked;
     const lockStyle = isLocked
-      ? 'background:#f0fdf4;border-color:#16a34a;color:#16a34a'
-      : 'background:#fff;border-color:var(--border);color:var(--muted)';
+      ? 'background:var(--green-bg);border-color:#16a34a;color:#16a34a'
+      : 'background:var(--surface);border-color:var(--border);color:var(--muted)';
     const lockTitle = isLocked
       ? `Locked to "${store.merchants[merchantKey].locked}" — click to unlock`
       : 'Lock this merchant to the selected category';
@@ -2497,7 +2513,7 @@ function renderImport() {
       const acctSpend = group.reduce((s, g) => s + (g.tx.amount < 0 ? g.tx.amount : 0), 0);
       const acctIncome = group.reduce((s, g) => s + (g.tx.amount > 0 ? g.tx.amount : 0), 0);
       const acctFlagged = group.filter(g => g.tx.flagged).length;
-      bodyHtml += `<tr style="background:#f1f5f9">
+      bodyHtml += `<tr style="background:rgba(120,130,145,0.12)">
         <td colspan="8" style="padding:10px;font-weight:700;font-size:14px;border-bottom:2px solid var(--border)">
           ${acctName}
           <span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:12px">
@@ -2626,7 +2642,7 @@ function renderTransferSummary() {
               </div>
               <div class="amount" style="color:var(--red)">$${fmt(amt)}</div>
             </summary>
-            <div style="background:#fff;border-radius:6px;margin:4px 0 2px;padding:4px 0;max-height:260px;overflow-y:auto">
+            <div style="background:var(--surface);border-radius:6px;margin:4px 0 2px;padding:4px 0;max-height:260px;overflow-y:auto">
               <table style="width:100%"><tbody>${rows}</tbody></table>
             </div>
           </details>`;
@@ -3936,7 +3952,7 @@ function drawAccountBalances() {
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, tooltip: { callbacks: { title: items => items.length ? new Date(items[0].parsed.x).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: '2-digit' }) : '', label: c => pTip(c.parsed.y) } } },
-        scales: { x: { type: 'linear', display: true, min: totalPts[0].x, max: totalPts[totalPts.length - 1].x, ticks: { maxTicksLimit: 5, maxRotation: 0, autoSkip: true, font: { size: 9 }, color: '#9ca3af', callback: v => new Date(v).toLocaleDateString('en-NZ', labelFmt) }, grid: { display: false } }, y: { ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: '#f5f5f5' } } }
+        scales: { x: { type: 'linear', display: true, min: totalPts[0].x, max: totalPts[totalPts.length - 1].x, ticks: { maxTicksLimit: 5, maxRotation: 0, autoSkip: true, font: { size: 9 }, color: '#9ca3af', callback: v => new Date(v).toLocaleDateString('en-NZ', labelFmt) }, grid: { display: false } }, y: { ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: 'rgba(120,130,145,0.18)' } } }
       }
     }));
   }
@@ -4207,7 +4223,7 @@ function renderTrendChart(txList, from, to) {
       },
       scales: {
         x: { stacked: true, grid: { display: false } },
-        y: { stacked: true, title: { display: true, text: '$ per ' + unitLabel }, grid: { color: '#f0f0f0' }, ticks: { callback: pAxis } }
+        y: { stacked: true, title: { display: true, text: '$ per ' + unitLabel }, grid: { color: 'rgba(120,130,145,0.18)' }, ticks: { callback: pAxis } }
       }
     }
   });
@@ -4240,7 +4256,7 @@ function renderSettings() {
     const netExt = extrapolate(bd.netWk);
     const grossExt = extrapolate(bd.grossWk);
     const esc = ei;
-    earnerHTML += `<div style="background:#f8f9fa;border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:10px">
+    earnerHTML += `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:10px">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <input value="${earner.name}" style="font-weight:600;font-size:14px;width:120px;border:1px solid var(--border);border-radius:4px;padding:4px 6px"
           onchange="store.income.earners[${esc}].name=this.value;saveStore(store);renderSettings();">
@@ -4790,7 +4806,7 @@ function showDuplicatesModal() {
   overlay.id = 'dupModal';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
   overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
-  overlay.innerHTML = `<div style="background:#fff;border-radius:10px;max-width:780px;width:100%;max-height:82vh;display:flex;flex-direction:column;overflow:hidden">
+  overlay.innerHTML = `<div style="background:var(--surface);border-radius:10px;max-width:780px;width:100%;max-height:82vh;display:flex;flex-direction:column;overflow:hidden">
     <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--border)">
       <h2 style="margin:0;font-size:18px">${lastSkippedDuplicates.length} duplicate${lastSkippedDuplicates.length > 1 ? 's' : ''} skipped</h2>
       <button class="btn btn-sm" onclick="document.getElementById('dupModal').remove()">Close</button>
@@ -4832,6 +4848,37 @@ showTab('home');
 // already rendered above, so this adopts newer server data or seeds the server
 // from this device, then enables live push-sync on subsequent saves.
 syncOnLoad();
+
+// --- Keyboard accessibility -------------------------------------------------
+// Most controls are click-handled <span>/<div> elements (onclick=...), which a
+// keyboard/screen-reader user cannot reach or operate. Tag those with role=button
+// + tabindex so they enter the tab order, and treat Enter/Space as a click. A
+// MutationObserver re-tags content rendered after load (the app re-renders via innerHTML).
+(function setupA11y() {
+  const ALREADY_OPERABLE = 'button,input,select,textarea,a[href]';
+  function tag(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('[onclick]').forEach(el => {
+      if (el.matches(ALREADY_OPERABLE) || el.hasAttribute('data-a11y')) return;
+      el.setAttribute('data-a11y', '1');
+      if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    });
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const el = e.target;
+    if (!el || !el.matches || !el.matches('[data-a11y][role="button"]')) return;
+    e.preventDefault();
+    el.click();
+  });
+  tag(document);
+  try {
+    new MutationObserver(muts => {
+      for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) tag(n);
+    }).observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+})();
 </script>
 </body>
 </html>
