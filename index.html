@@ -535,6 +535,13 @@ body.modal-open { overflow: hidden; }
 
   <!-- ═══ SETTINGS TAB ═══ -->
   <section id="tab-settings">
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600;font-size:15px;margin-bottom:2px">Setup wizard</div>
+        <div style="font-size:13px;color:var(--muted)">Finish setting up your accounts, transfer detection, and budget in a guided flow.</div>
+      </div>
+      <button class="btn btn-primary" onclick="openWizard('full')">Open setup wizard</button>
+    </div>
     <details class="settings-section" open>
       <summary><span class="s-arrow">&#9654;</span> Income</summary>
       <div class="section-body">
@@ -940,6 +947,11 @@ function migrateState(s) {
   cats.forEach(cat => { if (cat && !(cat in s.funding)) s.funding[cat] = defaultFundingFor(cat); });
   // Owner-specific one-time migrations removed for the open-source build.
   if (!Array.isArray(s.settlements)) s.settlements = [];   // recorded credit-card settlements
+  // First-run onboarding flag. Grandfather anyone who already has real data so the
+  // mandatory setup wizard only ever appears on a genuinely fresh install.
+  if (s.onboarded === undefined) {
+    s.onboarded = !!((s.periods && s.periods.length) || (s.balances && s.balances.length) || (s.settlements && s.settlements.length));
+  }
   s.schemaVersion = SCHEMA_VERSION;
   return s;
 }
@@ -4841,6 +4853,217 @@ function showDuplicatesModal() {
   document.body.appendChild(overlay);
 }
 
+// ═══ SETUP WIZARD ═══════════════════════════════════════════════════════════
+// Two flows share one modal:
+//   'firstrun' — mandatory, minimal, shown once on a fresh install: welcome, then
+//                name your accounts and tick which are internal (own) — that drives
+//                transfer hiding. Not dismissable; finishing marks store.onboarded.
+//   'full'     — optional, launched from Settings → Setup wizard: accounts, plus
+//                account-number prefixes for number-based transfer detection, plus a
+//                hand-off to the Budget editor.
+// The 'Partner A/B' allowance labels are intentionally NOT renamed here: several code
+// paths key off those literal names, so renaming belongs in a migration, not a wizard.
+let wizardMode = null;
+let wizardStep = 0;
+let wizardDraft = null;
+
+// Called after syncOnLoad settles, so a returning user (whose data arrives from the
+// server) is never wrongly treated as new.
+function maybeShowFirstRun() {
+  try { if (store && !store.onboarded) openWizard('firstrun'); }
+  catch (e) { console.warn('first-run check failed', e); }
+}
+
+function openWizard(mode) {
+  wizardMode = mode;
+  wizardStep = 0;
+  const internalLc = (store.internalAccounts || []).map(n => (n || '').toLowerCase());
+  wizardDraft = {
+    accounts: (store.accounts || []).map(a => ({
+      name: a.name || '',
+      type: a.type === 'negative' ? 'negative' : 'positive',
+      internal: internalLc.includes((a.name || '').toLowerCase()),
+      prefix: ''
+    }))
+  };
+  let overlay = document.getElementById('wizardModal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'wizardModal';
+  overlay.className = 'modal-overlay open';
+  // First-run is mandatory: backdrop clicks do nothing. Full setup can be dismissed.
+  overlay.onclick = e => { if (e.target === overlay && wizardMode !== 'firstrun') closeWizard(); };
+  document.body.appendChild(overlay);
+  document.body.classList.add('modal-open');
+  renderWizard();
+}
+
+function closeWizard() {
+  const o = document.getElementById('wizardModal');
+  if (o) o.remove();
+  document.body.classList.remove('modal-open');
+  wizardMode = null; wizardDraft = null;
+}
+
+function wizardSteps() {
+  return wizardMode === 'firstrun' ? ['welcome', 'accounts'] : ['accounts', 'prefixes', 'budget'];
+}
+
+function renderWizard() {
+  const overlay = document.getElementById('wizardModal');
+  if (!overlay) return;
+  const steps = wizardSteps();
+  const dismissable = wizardMode !== 'firstrun';
+  const dots = steps.map((s, i) =>
+    `<span style="width:8px;height:8px;border-radius:50%;background:${i === wizardStep ? 'var(--accent)' : 'var(--border)'}"></span>`).join('');
+  const body = renderWizardStep(steps[wizardStep]);
+  overlay.innerHTML = `<div class="modal-box" style="max-width:620px">
+    ${dismissable ? '<button class="modal-close" onclick="closeWizard()" aria-label="Close">&times;</button>' : ''}
+    <div style="display:flex;gap:6px;align-items:center;margin:2px 0 16px">${dots}</div>
+    <div id="wizardBody">${body}</div>
+  </div>`;
+}
+
+function renderWizardStep(key) {
+  if (key === 'welcome') return wizWelcome();
+  if (key === 'accounts') return wizAccounts();
+  if (key === 'prefixes') return wizPrefixes();
+  if (key === 'budget') return wizBudget();
+  return '';
+}
+
+function wizWelcome() {
+  return `
+    <h2 style="font-size:20px;margin:0 0 8px">Welcome 👋</h2>
+    <p style="color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 12px">
+      This is a self-hosted budget tracker. Your data stays in your browser and on your own
+      server — nothing is sent anywhere else. It ships with a few <strong>example accounts and
+      categories</strong> so you can see how it looks.</p>
+    <p style="color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 20px">
+      Let's take a minute to name your accounts. You can finish the rest of the setup (transfer
+      detection, budget amounts) any time from <strong>Settings → Setup wizard</strong>.</p>
+    <div style="display:flex;justify-content:space-between;gap:10px">
+      <button class="btn btn-sm" onclick="wizStartBlank()">Start blank instead</button>
+      <button class="btn btn-primary" onclick="wizNext()">Set up my accounts →</button>
+    </div>`;
+}
+
+function wizStartBlank() {
+  wizardDraft.accounts = [
+    { name: 'Everyday', type: 'positive', internal: true, prefix: '' },
+    { name: 'Savings', type: 'positive', internal: true, prefix: '' },
+    { name: 'Credit Card', type: 'negative', internal: false, prefix: '' }
+  ];
+  wizNext();
+}
+
+function wizAccounts() {
+  const rows = wizardDraft.accounts.map((a, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input value="${escapeHtml(a.name)}" oninput="wizSetAcct(${i},'name',this.value)" placeholder="Account name"
+        style="flex:1;min-width:0;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+      <select onchange="wizSetAcct(${i},'type',this.value)"
+        style="padding:7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+        <option value="positive"${a.type === 'positive' ? ' selected' : ''}>Asset</option>
+        <option value="negative"${a.type === 'negative' ? ' selected' : ''}>Debt / card</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);white-space:nowrap">
+        <input type="checkbox" ${a.internal ? 'checked' : ''} onchange="wizSetAcct(${i},'internal',this.checked)"> internal</label>
+      <button class="btn btn-sm" onclick="wizDelAcct(${i})" aria-label="Remove account">&times;</button>
+    </div>`).join('');
+  const backBtn = wizardStep > 0 ? '<button class="btn btn-sm" onclick="wizBack()">&larr; Back</button>' : '<span></span>';
+  const nextLabel = wizardMode === 'firstrun' ? 'Finish' : 'Next →';
+  return `
+    <h2 style="font-size:19px;margin:0 0 6px">Your accounts</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 14px">
+      Name the accounts you'll import. Tick <strong>internal</strong> for accounts you own — transfers
+      between internal accounts are hidden so they don't look like spending.</p>
+    <div>${rows}</div>
+    <button class="btn btn-sm" onclick="wizAddAcct()" style="margin:2px 0 18px">+ Add account</button>
+    <div style="display:flex;justify-content:space-between;gap:10px">${backBtn}
+      <button class="btn btn-primary" onclick="wizNext()">${nextLabel}</button></div>`;
+}
+
+function wizSetAcct(i, field, val) { if (wizardDraft.accounts[i]) wizardDraft.accounts[i][field] = val; }
+function wizAddAcct() { wizardDraft.accounts.push({ name: '', type: 'positive', internal: false, prefix: '' }); renderWizard(); }
+function wizDelAcct(i) { wizardDraft.accounts.splice(i, 1); renderWizard(); }
+
+function wizPrefixes() {
+  const internals = wizardDraft.accounts.filter(a => a.internal && (a.name || '').trim());
+  const rows = internals.length ? internals.map(a => {
+    const idx = wizardDraft.accounts.indexOf(a);
+    return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <div style="flex:1;font-size:14px">${escapeHtml(a.name)}</div>
+      <input value="${escapeHtml(a.prefix || '')}" oninput="wizSetAcct(${idx},'prefix',this.value)" placeholder="e.g. 12-3456-"
+        style="flex:1;min-width:0;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"></div>`;
+  }).join('') : '<p style="color:var(--muted);font-size:13px">No internal accounts yet — go back and tick the accounts you own.</p>';
+  return `
+    <h2 style="font-size:19px;margin:0 0 6px">Transfer detection</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 14px">
+      Optional. Enter the start of each account's number (as it appears in a transaction's other-party
+      field). Money moving to or from these is then auto-detected as an internal transfer, even when the
+      bank doesn't label it one.</p>
+    <div>${rows}</div>
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-top:16px">
+      <button class="btn btn-sm" onclick="wizBack()">&larr; Back</button>
+      <button class="btn btn-primary" onclick="wizNext()">Next →</button></div>`;
+}
+
+function wizBudget() {
+  const cats = Object.keys(store.budget || {}).filter(c => c !== 'Unaccounted');
+  const list = cats.slice(0, 12).map(c => `<li style="font-size:13px;color:var(--muted)">${escapeHtml(c)}</li>`).join('');
+  return `
+    <h2 style="font-size:19px;margin:0 0 6px">Your budget</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 12px">
+      You have ${cats.length} categor${cats.length === 1 ? 'y' : 'ies'} set up. Fine-tune the amounts and
+      frequencies in the full Budget editor — that's where you set what you expect to spend on each.</p>
+    <ul style="margin:0 0 16px 18px;columns:2;column-gap:24px">${list}</ul>
+    <div style="display:flex;justify-content:space-between;gap:10px">
+      <button class="btn btn-sm" onclick="wizBack()">&larr; Back</button>
+      <button class="btn btn-primary" onclick="wizFinish(true)">Finish &amp; open Budget editor</button></div>`;
+}
+
+function wizNext() {
+  const steps = wizardSteps();
+  if (wizardStep < steps.length - 1) { wizardStep++; renderWizard(); }
+  else wizFinish(false);
+}
+function wizBack() { if (wizardStep > 0) { wizardStep--; renderWizard(); } }
+
+function wizFinish(openBudget) {
+  const mode = wizardMode;
+  const accts = wizardDraft.accounts.filter(a => (a.name || '').trim());
+  if (accts.length) {
+    // Preserve any existing per-account fields (role, akahuType, ...) by merging on name.
+    store.accounts = accts.map(a => {
+      const existing = (store.accounts || []).find(x => (x.name || '').toLowerCase() === a.name.toLowerCase());
+      const merged = existing ? { ...existing } : {};
+      merged.name = a.name.trim();
+      merged.type = a.type === 'negative' ? 'negative' : 'positive';
+      merged.role = roleForAccount(merged.name, merged.akahuType);
+      return merged;
+    });
+    store.internalAccounts = accts.filter(a => a.internal).map(a => a.name.trim());
+  }
+  const prefixes = wizardDraft.accounts
+    .filter(a => a.internal && (a.prefix || '').trim())
+    .map(a => a.prefix.trim().toLowerCase());
+  if (prefixes.length) {
+    store.ownAccountPrefixes = Array.from(new Set([...(store.ownAccountPrefixes || []), ...prefixes]));
+  }
+  store.onboarded = true;
+  saveStore(store);
+  closeWizard();
+  try { showTab(openBudget ? 'settings' : (_activeTab || 'home')); } catch (e) {}
+  toast(mode === 'firstrun' ? 'Accounts saved — welcome aboard!' : 'Setup saved');
+  if (openBudget) {
+    try {
+      const el = document.getElementById('budgetList');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (e) {}
+  }
+}
+
 // ═══ INIT ═══
 backupLocalOnce();        // safety copy of pre-upgrade data (runs once)
 store = loadStore();
@@ -4861,7 +5084,8 @@ showTab('home');
 // Reconcile with the server (shared state, multi-device). Local-first: we've
 // already rendered above, so this adopts newer server data or seeds the server
 // from this device, then enables live push-sync on subsequent saves.
-syncOnLoad();
+// Then, once the store reflects any server data, show the first-run wizard if new.
+syncOnLoad().then(maybeShowFirstRun);
 
 // --- Keyboard accessibility -------------------------------------------------
 // Most controls are click-handled <span>/<div> elements (onclick=...), which a
