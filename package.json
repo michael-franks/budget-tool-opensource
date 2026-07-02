@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "express": "^4.22.2",
-    "nodemailer": "^6.10.1",
     "web-push": "^3.6.7"
   }
 }

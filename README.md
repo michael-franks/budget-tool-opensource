@@ -9,8 +9,7 @@ It is a single-page front end (`index.html`, plain HTML + JS, with Chart.js
 bundled locally — no CDN) served by a small Node/Express backend (`server.js`)
 that talks to Akahu and stores your data as JSON files on disk. The front end
 makes no third-party requests; the server talks only to Akahu (to read your bank
-data) and, optionally, your own SMTP server (for reminder emails) and CoinGecko
-(to price any crypto holdings you choose to add).
+data) and, optionally, CoinGecko (to price any crypto holdings you choose to add).
 
 > Money amounts, categories and accounts ship with a generic demo household so
 > the app is usable out of the box. Edit them in **Settings**, or let your real
@@ -94,8 +93,8 @@ All configuration is via environment variables (see `.env.example`):
 | `PORT` / `HOST` | Where the server listens (default `3000` / `127.0.0.1`, localhost-only). Set `HOST=0.0.0.0` to expose it — but the API has no login, so only do that behind Cloudflare Access or a VPN. |
 | `DATA_DIR` | Where JSON data is stored (default `./data`) |
 | `INITIAL_FETCH_FROM` | How far back to fetch on first sync (ISO date) |
-| `APP_URL` | Public URL used in reminder emails / CORS |
-| `SMTP_*`, `CARD_REMINDER_*` | Optional credit-card settlement reminder emails |
+| `APP_URL` | Public URL used in notification links / CORS |
+| `CARD_REMINDER_LEAD_DAYS` | Days before the 15th to send the settle push (default 4) |
 | `REQUIRE_CF_ACCESS`, `ALLOWED_EMAIL` | Optional Cloudflare Access enforcement |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional web-push keys — enable install-app notifications (`npx web-push generate-vapid-keys`) |
 
@@ -108,8 +107,8 @@ locally-stored data; live bank data still needs the network).
 - **Install**: Android/Chrome — "Install app" from the browser menu. iPhone/Safari —
   Share → "Add to Home Screen".
 - **Notifications** (optional): once you set the `VAPID_*` keys above, a "Notifications"
-  toggle appears in Settings. Enable it to get a push when the credit card is due to be
-  settled (this fires alongside the email reminder, if configured). Generate keys once
+  toggle appears in Settings. Enable it to get two pushes per cycle — one when the monthly
+  period ends, and one when the card is almost due to be settled. Generate keys once
   with `npx web-push generate-vapid-keys`, put them in your `.env`, and restart.
 - **iOS note**: web push only works once the app is added to the home screen, on
   iOS 16.4+, and the site is served over HTTPS (`localhost` is exempt for testing).

@@ -11,7 +11,6 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-let nodemailer = null; try { nodemailer = require('nodemailer'); } catch (e) { console.warn('nodemailer not installed — credit-card reminder emails disabled'); }
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -367,50 +366,56 @@ async function sendPush(payload) {
   return ok;
 }
 
-// ─── Credit-card settlement reminder ───────────────────────────
-// Cycle: statement closes month-end, payment due the 15th of the next month →
-// next due = the next 15th on/after today. Emails once per cycle (deduped on the
-// due date) once within CARD_REMINDER_LEAD_DAYS and there's a balance to settle.
+// ─── Settlement reminders (web push) ───────────────────────────
+// Cycle: the statement closes at month-end, payment is due the 15th of the next
+// month. Two push notifications per cycle, each deduped independently:
+//   1) month-end  — once, when the monthly period closes (heads-up + amount)
+//   2) settle-due — once, when the payment is within CARD_REMINDER_LEAD_DAYS
+// Email was removed — notifications are push-only (see the PWA notifications toggle).
 function nextCardDue() {
   const t = new Date(); t.setHours(0, 0, 0, 0);
   let d = new Date(t.getFullYear(), t.getMonth(), 15);
   if (d < t) d = new Date(t.getFullYear(), t.getMonth() + 1, 15);
   return { due: d, days: Math.round((d - t) / 86400000) };
 }
-async function sendMail(subject, text, html) {
-  if (!nodemailer || !process.env.SMTP_HOST) throw new Error('email not configured (SMTP_* env / nodemailer)');
-  const tx = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: +(process.env.SMTP_PORT || 587), secure: false, auth: { user: process.env.SMTP_USERNAME, pass: process.env.SMTP_PASSWORD } });
-  const to = process.env.CARD_REMINDER_TO || process.env.ALERT_EMAIL_TO || process.env.SMTP_USERNAME;
-  await tx.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USERNAME, to, subject, text, html });
-  return to;
-}
 async function checkCardReminder(accounts, force) {
-  const emailOn = !!(nodemailer && process.env.SMTP_HOST);
-  const pushOn = pushConfigured();
-  if (!emailOn && !pushOn && !force) return { sent: false, reason: 'no channels configured' };
-  const lead = parseInt(process.env.CARD_REMINDER_LEAD_DAYS || '4', 10);
-  const { due, days } = nextCardDue();
-  if (!force && days > lead) return { sent: false, reason: 'not due for ' + days + ' days' };
+  if (!pushConfigured() && !force) return { sent: false, reason: 'push not configured' };
+  const appUrl = process.env.APP_URL || 'http://localhost:3000';
   let accs = accounts; if (!accs) accs = loadJSON(ACCOUNTS_FILE, []);
   const card = (accs || []).find(a => a.type === 'CREDITCARD');
   const cardOwed = card ? Math.abs(Math.min(0, card.balance || 0)) : 0;
-  if (!force && cardOwed < 1) return { sent: false, reason: 'nothing to settle' };
-  const dueISO = due.getFullYear() + '-' + String(due.getMonth() + 1).padStart(2, '0') + '-' + String(due.getDate()).padStart(2, '0');
   const meta = loadJSON(META_FILE, {});
-  if (!force && meta.lastCardReminder === dueISO) return { sent: false, reason: 'already sent this cycle' };
+  const res = { periodEnd: false, settleDue: false, cardOwed };
+
+  // 1) Month-end: the budget period just closed. Fire once per month, on the first
+  //    check of the new month (deduped by the ended month, robust to cron timing).
+  const now = new Date();
+  const ended = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const endedKey = ended.getFullYear() + '-' + String(ended.getMonth() + 1).padStart(2, '0');
+  if (force || (now.getDate() <= 5 && meta.lastPeriodEndNotice !== endedKey)) {
+    const monthName = ended.toLocaleDateString('en-NZ', { month: 'long' });
+    const body = cardOwed >= 1
+      ? `${monthName} wrapped up — $${cardOwed.toFixed(2)} on the card to settle by the 15th.`
+      : `${monthName} wrapped up — review your spending for the month.`;
+    const pushed = await sendPush({ title: 'New month', body, url: appUrl, tag: 'period-end' });
+    if (!force && pushed) withMeta(m => { m.lastPeriodEndNotice = endedKey; });
+    res.periodEnd = pushed > 0;
+  }
+
+  // 2) Settle-due: payment almost due and there's a balance to clear.
+  const lead = parseInt(process.env.CARD_REMINDER_LEAD_DAYS || '4', 10);
+  const { due, days } = nextCardDue();
+  const dueISO = due.getFullYear() + '-' + String(due.getMonth() + 1).padStart(2, '0') + '-' + String(due.getDate()).padStart(2, '0');
   const n = due.getDate(); const o = (n % 10 === 1 && n % 100 !== 11) ? 'st' : (n % 10 === 2 && n % 100 !== 12) ? 'nd' : (n % 10 === 3 && n % 100 !== 13) ? 'rd' : 'th';
   const dueLabel = n + o + ' ' + due.toLocaleDateString('en-NZ', { month: 'long' });
-  const subject = `Credit card: settle in ${days} day${days === 1 ? '' : 's'} (due ${dueLabel})`;
-  const appUrl = process.env.APP_URL || 'http://localhost:3000';
-  const text = `Time to settle your credit card.\n\nDue: ${dueLabel} (in ${days} day${days === 1 ? '' : 's'}).\nBalance to settle: $${cardOwed.toFixed(2)}.\n\nReview & settle: ${appUrl}\n`;
-  const html = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:15px;color:#0f172a"><p>Time to settle <b>your credit card</b>.</p><p><b>Due:</b> ${dueLabel} (in ${days} day${days === 1 ? '' : 's'})<br><b>Balance to settle:</b> $${cardOwed.toFixed(2)}</p><p><a href="${appUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; settle →</a></p></div>`;
-  // Both channels fire off the same cycle trigger; a failure in one never blocks the other.
-  let emailedTo = null, pushed = 0;
-  if (emailOn) { try { emailedTo = await sendMail(subject, text, html); } catch (e) { console.error('[reminder] email failed:', e.message); } }
-  if (pushOn) { try { pushed = await sendPush({ title: 'Credit card due', body: `Settle $${cardOwed.toFixed(2)} by ${dueLabel} (in ${days} day${days === 1 ? '' : 's'})`, url: appUrl, tag: 'card-reminder' }); } catch (e) { console.error('[reminder] push failed:', e.message); } }
-  if (!force && (emailedTo || pushed)) withMeta(m => { m.lastCardReminder = dueISO; });   // don't re-fire this cycle; a forced test doesn't consume it
-  console.log('[reminder] card settlement · due', dueISO, '· $' + cardOwed.toFixed(2), '· email:', emailedTo || 'off', '· push:', pushed);
-  return { sent: !!(emailedTo || pushed), to: emailedTo, pushed, days, dueISO, cardOwed };
+  if (force || (days <= lead && cardOwed >= 1 && meta.lastCardReminder !== dueISO)) {
+    const pushed = await sendPush({ title: 'Card due soon', body: `Settle $${cardOwed.toFixed(2)} by ${dueLabel} (in ${days} day${days === 1 ? '' : 's'}).`, url: appUrl, tag: 'card-reminder' });
+    if (!force && pushed) withMeta(m => { m.lastCardReminder = dueISO; });
+    res.settleDue = pushed > 0;
+  }
+
+  console.log('[reminder] period-end:', res.periodEnd, '· settle-due:', res.settleDue, '· $' + cardOwed.toFixed(2));
+  return { sent: res.periodEnd || res.settleDue, ...res, days, dueISO };
 }
 
 // ─── API routes ───────────────────────────────────────────────
