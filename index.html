@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Budget Tool</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80' fill='%2316a34a'>$</text></svg>">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<!-- Chart.js 4.4.7, vendored locally (served same-origin from /vendor) — no CDN, works offline -->
+<script src="/vendor/chart.umd.min.js"></script>
 <style>
 :root {
   --bg: #f5f6f8; --surface: #fff; --border: #e8eaed; --text: #1a1a1a;
@@ -550,6 +551,14 @@ body.modal-open { overflow: hidden; }
       </div>
     </details>
 
+    <details class="settings-section">
+      <summary><span class="s-arrow">&#9654;</span> Household</summary>
+      <div class="section-body">
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your ages drive the retirement projection on the Investments tab.</p>
+        <div id="householdSettings"></div>
+      </div>
+    </details>
+
     <details class="settings-section" open>
       <summary><span class="s-arrow">&#9654;</span> Budget Categories</summary>
       <div class="section-body">
@@ -573,7 +582,7 @@ body.modal-open { overflow: hidden; }
     <details class="settings-section">
       <summary><span class="s-arrow">&#9654;</span> Accounts</summary>
       <div class="section-body">
-        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your ANZ accounts. Edit names or add/remove as needed.</p>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your bank accounts. Edit names or add/remove as needed.</p>
         <div id="accountsList"></div>
         <button class="btn btn-sm" style="margin-top:8px" onclick="addAccount()">+ Add account</button>
       </div>
@@ -949,6 +958,9 @@ function migrateState(s) {
   if (!Array.isArray(s.settlements)) s.settlements = [];   // recorded credit-card settlements
   // First-run onboarding flag. Grandfather anyone who already has real data so the
   // mandatory setup wizard only ever appears on a genuinely fresh install.
+  // Household ages that drive the retirement projection. Defaults reproduce the previous
+  // hardcoded 30/60/25-year horizons, so existing users' projections do not change.
+  if (!s.household || typeof s.household !== 'object') s.household = { currentAge: 35, retireAge: 65, kidAge: 5 };
   if (s.onboarded === undefined) {
     s.onboarded = !!((s.periods && s.periods.length) || (s.balances && s.balances.length) || (s.settlements && s.settlements.length));
   }
@@ -1537,7 +1549,9 @@ async function renderHome() {
   // the next due date is the next 15th on/after today.
   const cardDue = (function () { const t = new Date(); t.setHours(0, 0, 0, 0); let d = new Date(t.getFullYear(), t.getMonth(), 15); if (d < t) d = new Date(t.getFullYear(), t.getMonth() + 1, 15); const n = d.getDate(); const o = (n % 10 === 1 && n % 100 !== 11) ? 'st' : (n % 10 === 2 && n % 100 !== 12) ? 'nd' : (n % 10 === 3 && n % 100 !== 13) ? 'rd' : 'th'; return { days: Math.round((d - t) / 86400000), label: n + o + ' ' + d.toLocaleDateString('en-NZ', { month: 'short' }) }; })();
   const cardDueColor = cardDue.days <= 2 ? 'var(--red)' : cardDue.days <= 5 ? '#d97706' : 'var(--muted)';
-  html += `<div class="card" style="border-left:4px solid var(--accent)">
+  // Only show the settle card when there's actually a credit card to settle — otherwise it
+  // renders a meaningless "$0 to settle" (and settlement is irrelevant with no shared card).
+  if (card) html += `<div class="card" style="border-left:4px solid var(--accent)">
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Credit card</div>
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
       <div style="font-size:32px;font-weight:800">${m2(cardOwed)}<span style="font-size:14px;font-weight:500;color:var(--muted)"> to settle</span></div>
@@ -1576,10 +1590,16 @@ const INV_PALETTE = ['#2563eb', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#dc
 // separate "kids / long-term" pot runs to its own milestones (e.g. a first home,
 // then retirement). Each holding grows at its own editable rate and takes its own
 // optional contribution (amount x chosen frequency). A rough illustration only.
-const KID_AGE = 5;            // example age for the optional kids / long-term pot
-const PROJ_YRS_US = 65 - 35;  // retirement age - current age (edit to suit)
-const PROJ_YRS_KID = 65 - KID_AGE;
-const KID_YRS_HOUSE = 30 - KID_AGE;
+// Projection horizons derive from the household's ages (Settings → Household). Helpers,
+// not consts, so editing the ages recomputes the projection live. Defaults (current 35 →
+// retire 65, child 5) reproduce the original 30 / 60 / 25-year horizons for existing users.
+function hhold() { return (store && store.household) || {}; }
+function projCurrentAge() { const v = +hhold().currentAge; return isFinite(v) && v > 0 ? v : 35; }
+function projRetireAge()  { const v = +hhold().retireAge;  return isFinite(v) && v > 0 ? v : 65; }
+function projKidAge()     { const v = +hhold().kidAge;     return isFinite(v) && v >= 0 ? v : 5; }
+function projYrsUs()   { return Math.max(0, projRetireAge() - projCurrentAge()); }
+function projYrsKid()  { return Math.max(0, projRetireAge() - projKidAge()); }
+function kidYrsHouse() { return Math.max(0, 30 - projKidAge()); }   // first-home milestone fixed at age 30
 let _projBuckets = [];   // [{key, fundKey, label, value, rate, group:'us'|'kids', color}]
 let _projCharts = { us: null, kids: null };
 let _drawProjRAF = null;
@@ -1611,17 +1631,17 @@ function recalcProjection() {
   const us = (_projBuckets || []).filter(b => b.group === 'us');
   const kids = (_projBuckets || []).filter(b => b.group === 'kids');
   const setV = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-  setV('projValue', '$' + fmt(projGroupFV(us, PROJ_YRS_US), 0));
+  setV('projValue', '$' + fmt(projGroupFV(us, projYrsUs()), 0));
   if (kids.length) {
-    setV('projValueKidsHouse', '$' + fmt(projGroupFV(kids, KID_YRS_HOUSE), 0));
-    setV('projValueKids', '$' + fmt(projGroupFV(kids, PROJ_YRS_KID), 0));
+    setV('projValueKidsHouse', '$' + fmt(projGroupFV(kids, kidYrsHouse()), 0));
+    setV('projValueKids', '$' + fmt(projGroupFV(kids, projYrsKid()), 0));
   }
   scheduleDrawProjection();
 }
 function drawProjection() {
-  drawProjGroup('projChartUs', 'us', (_projBuckets || []).filter(b => b.group === 'us'), PROJ_YRS_US, null);
-  drawProjGroup('projChartKids', 'kids', (_projBuckets || []).filter(b => b.group === 'kids'), PROJ_YRS_KID,
-    [{ t: KID_YRS_HOUSE, label: 'First home · 30' }, { t: PROJ_YRS_KID, label: 'Retirement · 70' }]);
+  drawProjGroup('projChartUs', 'us', (_projBuckets || []).filter(b => b.group === 'us'), projYrsUs(), null);
+  drawProjGroup('projChartKids', 'kids', (_projBuckets || []).filter(b => b.group === 'kids'), projYrsKid(),
+    [{ t: kidYrsHouse(), label: 'First home · ' + (projKidAge() + kidYrsHouse()) }, { t: projYrsKid(), label: 'Retirement · ' + projRetireAge() }]);
 }
 // Draws the dashed milestone lines + value labels for the kids chart (chart.$milestones).
 const projMilestonePlugin = {
@@ -1795,8 +1815,8 @@ async function renderInvestments() {
       <h2 style="margin:0 0 2px">Kids</h2>
       <p style="font-size:12px;color:var(--muted);margin:0 0 12px">An optional pot kept aside, with a longer horizon - runs to two milestones.</p>
       <div style="display:flex;gap:22px;flex-wrap:wrap;margin-bottom:6px">
-        <div><div style="font-size:11px;color:var(--muted)">First home · age 30 <span style="opacity:.7">(~28 yrs)</span></div><div style="font-size:24px;font-weight:800"><span id="projValueKidsHouse" class="amt">$—</span></div></div>
-        <div><div style="font-size:11px;color:var(--muted)">Retirement · age 70 <span style="opacity:.7">(~68 yrs)</span></div><div style="font-size:24px;font-weight:800"><span id="projValueKids" class="amt">$—</span></div></div>
+        <div><div style="font-size:11px;color:var(--muted)">First home · age ${projKidAge() + kidYrsHouse()} <span style="opacity:.7">(~${kidYrsHouse()} yrs)</span></div><div style="font-size:24px;font-weight:800"><span id="projValueKidsHouse" class="amt">$—</span></div></div>
+        <div><div style="font-size:11px;color:var(--muted)">Retirement · age ${projRetireAge()} <span style="opacity:.7">(~${projYrsKid()} yrs)</span></div><div style="font-size:24px;font-weight:800"><span id="projValueKids" class="amt">$—</span></div></div>
       </div>
       <div>${bucketRowsFor('kids')}</div>
       <div style="height:210px;margin-top:10px"><canvas id="projChartKids"></canvas></div>
@@ -4256,7 +4276,32 @@ function renderTrendChart(txList, from, to) {
 }
 
 // ═══ SETTINGS ═══
+function setHousehold(field, val) {
+  if (!store.household || typeof store.household !== 'object') store.household = {};
+  const n = String(val).trim() === '' ? null : parseInt(val, 10);
+  store.household[field] = (n != null && isFinite(n) && n >= 0 && n <= 120) ? n : null;
+  saveStore(store);
+  try { recalcProjection(); } catch (e) {}
+}
+function renderHousehold() {
+  const el = document.getElementById('householdSettings');
+  if (!el) return;
+  const h = store.household || {};
+  const row = (label, key, val, ph) => `
+    <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:14px">
+      <span>${label}</span>
+      <input type="number" min="0" max="120" value="${val == null ? '' : val}" placeholder="${ph}"
+        oninput="setHousehold('${key}', this.value)"
+        style="width:90px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right">
+    </label>`;
+  el.innerHTML = row('Your current age', 'currentAge', h.currentAge, '35')
+    + row('Planned retirement age', 'retireAge', h.retireAge, '65')
+    + row('Child current age (optional kids pot)', 'kidAge', h.kidAge, '5');
+}
+
+// ═══ SETTINGS ═══
 function renderSettings() {
+  renderHousehold();
   // Accounts
   document.getElementById('accountsList').innerHTML = store.accounts.map((a, i) => `
     <div class="setting-row">
@@ -4784,15 +4829,24 @@ function exportData() {
 
 function importData(e) {
   const file = e.target.files[0];
-  if (!file) return;
+  if (!file) { e.target.value = ''; return; }
   const reader = new FileReader();
   reader.onload = (evt) => {
     try {
-      store = migrateState(JSON.parse(evt.target.result));
+      const parsed = JSON.parse(evt.target.result);
+      // Guard against a valid-JSON-but-wrong-shape file replacing everything with garbage.
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        toast('That file is not a valid backup'); return;
+      }
+      // Importing is destructive — it replaces ALL current data and syncs the replacement
+      // to every device. Confirm first (mirrors the double-confirm on Reset).
+      if (!confirm('Importing will REPLACE all current data (accounts, periods, balances, settlements) with this file, on every device. Continue?')) return;
+      store = migrateState(parsed);
       saveStore(store);
       toast('Data imported!');
       renderSettings();
-    } catch (err) { toast('Invalid JSON file'); }
+    } catch (err) { toast('Could not import — invalid or corrupt backup file'); }
+    finally { e.target.value = ''; }   // let the same file be re-selected later
   };
   reader.readAsText(file);
 }

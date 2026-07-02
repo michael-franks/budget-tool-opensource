@@ -34,8 +34,10 @@ const HEADERS = {
 };
 
 // ─── Data storage ──────────────────────────────────────────────
-// All JSON data files live here (created on first write).
+// All JSON data files live here. Create it up front so the very first write
+// (state save / fetch) can't ENOENT on a fresh clone or an empty Docker volume.
 const DATA_DIR = process.env.DATA_DIR || './data';
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { console.error('Could not create DATA_DIR:', e.message); }
 const TX_FILE = path.join(DATA_DIR, 'transactions.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const META_FILE = path.join(DATA_DIR, 'fetch-meta.json');
@@ -43,12 +45,17 @@ const BALANCE_HISTORY_FILE = path.join(DATA_DIR, 'balance-history.json');
 const BALANCE_LOG_FILE = path.join(DATA_DIR, 'balance-log.json');
 
 // Optional: manually-tracked self-custody crypto (no API), valued live via CoinGecko.
-// Add your own holdings (CoinGecko id + symbol + amount); leave empty to disable.
-const CRYPTO_HOLDINGS = [
+// Ships empty. To track holdings WITHOUT editing source (keeps your balances out of
+// git), create data/crypto-holdings.json as an array of { id, sym, amount } where id
+// is the CoinGecko id, e.g. [ { "id": "bitcoin", "sym": "BTC", "amount": 0.05 } ].
+// The inline array is only a fallback when that file is absent.
+const CRYPTO_HOLDINGS = loadJSON(path.join(DATA_DIR, 'crypto-holdings.json'), [
   // { id: 'bitcoin', sym: 'BTC', amount: 0.05 },
   // { id: 'ethereum', sym: 'ETH', amount: 1.2 },
-];
+]);
 async function fetchCryptoData() {
+  // Opt-in: with no holdings configured, do nothing (and skip the pointless CoinGecko call).
+  if (!Array.isArray(CRYPTO_HOLDINGS) || !CRYPTO_HOLDINGS.length) return { holdings: [], total: 0 };
   const ids = CRYPTO_HOLDINGS.map(c => c.id).join(',');
   const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + ids + '&vs_currencies=nzd', { signal: AbortSignal.timeout(7000) });
   if (!r.ok) throw new Error('coingecko ' + r.status);
@@ -411,6 +418,9 @@ app.use('/api', (req, res, next) => {
   if (ALLOWED_EMAIL && email !== ALLOWED_EMAIL) return res.status(403).json({ ok: false, error: 'Forbidden' });
   next();
 });
+
+// Serve vendored front-end assets (Chart.js) from the repo, same-origin — no CDN.
+app.use('/vendor', express.static(path.join(__dirname, 'vendor'), { maxAge: '1y', immutable: true }));
 
 // Serve budget tracker HTML at root
 const trackerFile = path.join(__dirname, 'index.html');

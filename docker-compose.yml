@@ -1,0 +1,22 @@
+services:
+  budget-tool:
+    build: .
+    image: budget-tool
+    ports:
+      - "3000:3000"
+    environment:
+      # Required — both come from your Akahu app at https://my.akahu.nz (read-only).
+      # Compose auto-loads them from a .env file next to this compose file.
+      AKAHU_APP_TOKEN: ${AKAHU_APP_TOKEN:?set AKAHU_APP_TOKEN in .env}
+      AKAHU_USER_TOKEN: ${AKAHU_USER_TOKEN:?set AKAHU_USER_TOKEN in .env}
+      # Container defaults (override in .env if you like)
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATA_DIR: /data
+      INITIAL_FETCH_FROM: ${INITIAL_FETCH_FROM:-2024-01-01}
+    volumes:
+      - budget-data:/data
+    restart: unless-stopped
+
+volumes:
+  budget-data:
