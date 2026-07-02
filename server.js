@@ -335,6 +335,38 @@ async function runFetch() {
   return { newCount: newPosted.length, pendingCount: pendingToKeep.length, totalCount: merged.length };
 }
 
+// ─── Web push ──────────────────────────────────────────────────
+// Optional. Set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (generate once with
+// `npx web-push generate-vapid-keys`) to enable browser push notifications.
+// Falls back to a no-op if the keys or the web-push module are absent.
+let webpush = null;
+try { webpush = require('web-push'); } catch (_) { /* dependency not installed — push disabled */ }
+const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
+const PUSH_FILE = path.join(DATA_DIR, 'push-subscriptions.json');
+if (webpush && VAPID_PUBLIC && VAPID_PRIVATE) {
+  try { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE); }
+  catch (e) { console.error('[push] invalid VAPID keys — push disabled:', e.message); webpush = null; }
+}
+function pushConfigured() { return !!(webpush && VAPID_PUBLIC && VAPID_PRIVATE); }
+function loadSubs() { return loadJSON(PUSH_FILE, []); }
+function saveSubs(s) { try { saveJSON(PUSH_FILE, s); } catch (e) { console.error('[push] could not save subscriptions:', e.message); } }
+// Send a push to every stored subscription; prune ones the browser has expired (404/410).
+async function sendPush(payload) {
+  if (!pushConfigured()) return 0;
+  const subs = loadSubs();
+  if (!subs.length) return 0;
+  const body = JSON.stringify(payload);
+  let ok = 0; const keep = [];
+  for (const sub of subs) {
+    try { await webpush.sendNotification(sub, body); ok++; keep.push(sub); }
+    catch (e) { if (e && (e.statusCode === 404 || e.statusCode === 410)) { /* gone — drop it */ } else { keep.push(sub); } }
+  }
+  if (keep.length !== subs.length) saveSubs(keep);
+  return ok;
+}
+
 // ─── Credit-card settlement reminder ───────────────────────────
 // Cycle: statement closes month-end, payment due the 15th of the next month →
 // next due = the next 15th on/after today. Emails once per cycle (deduped on the
@@ -353,7 +385,9 @@ async function sendMail(subject, text, html) {
   return to;
 }
 async function checkCardReminder(accounts, force) {
-  if (!nodemailer || !process.env.SMTP_HOST) return { sent: false, reason: 'email not configured' };
+  const emailOn = !!(nodemailer && process.env.SMTP_HOST);
+  const pushOn = pushConfigured();
+  if (!emailOn && !pushOn && !force) return { sent: false, reason: 'no channels configured' };
   const lead = parseInt(process.env.CARD_REMINDER_LEAD_DAYS || '4', 10);
   const { due, days } = nextCardDue();
   if (!force && days > lead) return { sent: false, reason: 'not due for ' + days + ' days' };
@@ -370,10 +404,13 @@ async function checkCardReminder(accounts, force) {
   const appUrl = process.env.APP_URL || 'http://localhost:3000';
   const text = `Time to settle your credit card.\n\nDue: ${dueLabel} (in ${days} day${days === 1 ? '' : 's'}).\nBalance to settle: $${cardOwed.toFixed(2)}.\n\nReview & settle: ${appUrl}\n`;
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:15px;color:#0f172a"><p>Time to settle <b>your credit card</b>.</p><p><b>Due:</b> ${dueLabel} (in ${days} day${days === 1 ? '' : 's'})<br><b>Balance to settle:</b> $${cardOwed.toFixed(2)}</p><p><a href="${appUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; settle →</a></p></div>`;
-  const to = await sendMail(subject, text, html);
-  if (!force) withMeta(m => { m.lastCardReminder = dueISO; });   // re-load + merge; a forced test doesn't consume the real cycle reminder
-  console.log('[reminder] Card settlement email →', to, '· due', dueISO, '· $' + cardOwed.toFixed(2));
-  return { sent: true, to, days, dueISO, cardOwed };
+  // Both channels fire off the same cycle trigger; a failure in one never blocks the other.
+  let emailedTo = null, pushed = 0;
+  if (emailOn) { try { emailedTo = await sendMail(subject, text, html); } catch (e) { console.error('[reminder] email failed:', e.message); } }
+  if (pushOn) { try { pushed = await sendPush({ title: 'Credit card due', body: `Settle $${cardOwed.toFixed(2)} by ${dueLabel} (in ${days} day${days === 1 ? '' : 's'})`, url: appUrl, tag: 'card-reminder' }); } catch (e) { console.error('[reminder] push failed:', e.message); } }
+  if (!force && (emailedTo || pushed)) withMeta(m => { m.lastCardReminder = dueISO; });   // don't re-fire this cycle; a forced test doesn't consume it
+  console.log('[reminder] card settlement · due', dueISO, '· $' + cardOwed.toFixed(2), '· email:', emailedTo || 'off', '· push:', pushed);
+  return { sent: !!(emailedTo || pushed), to: emailedTo, pushed, days, dueISO, cardOwed };
 }
 
 // ─── API routes ───────────────────────────────────────────────
@@ -422,6 +459,12 @@ app.use('/api', (req, res, next) => {
 // Serve vendored front-end assets (Chart.js) from the repo, same-origin — no CDN.
 app.use('/vendor', express.static(path.join(__dirname, 'vendor'), { maxAge: '1y', immutable: true }));
 
+// PWA assets. sw.js must be reachable at the root so its scope covers the whole app;
+// it's served no-cache so a new service worker is picked up promptly.
+app.use('/icons', express.static(path.join(__dirname, 'icons'), { maxAge: '30d' }));
+app.get('/sw.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('application/javascript'); res.sendFile(path.join(__dirname, 'sw.js')); });
+app.get('/manifest.webmanifest', (req, res) => { res.type('application/manifest+json'); res.sendFile(path.join(__dirname, 'manifest.webmanifest')); });
+
 // Serve budget tracker HTML at root
 const trackerFile = path.join(__dirname, 'index.html');
 if (fs.existsSync(trackerFile)) {
@@ -457,6 +500,29 @@ app.get('/api/status', (req, res) => {
 // lead-time, balance, and once-per-cycle checks to send a test email now.
 app.get('/api/card-reminder', async (req, res) => {
   try { const r = await checkCardReminder(null, req.query.force === '1' || req.query.test === '1'); res.json({ ok: true, ...r }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ── Web-push subscription management ──
+app.get('/api/push/vapid-public-key', (req, res) => {
+  if (!pushConfigured()) return res.status(503).json({ ok: false, error: 'push not configured' });
+  res.json({ key: VAPID_PUBLIC });
+});
+app.post('/api/push/subscribe', (req, res) => {
+  const sub = req.body;
+  if (!sub || typeof sub.endpoint !== 'string') return res.status(400).json({ ok: false, error: 'invalid subscription' });
+  const subs = loadSubs();
+  if (!subs.find(s => s.endpoint === sub.endpoint)) { subs.push(sub); saveSubs(subs); }
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', (req, res) => {
+  const ep = req.body && req.body.endpoint;
+  if (ep) saveSubs(loadSubs().filter(s => s.endpoint !== ep));
+  res.json({ ok: true });
+});
+app.post('/api/push/test', async (req, res) => {
+  if (!pushConfigured()) return res.status(503).json({ ok: false, error: 'push not configured' });
+  try { const sent = await sendPush({ title: 'Budget Tool', body: 'Test notification — push is working.', url: '/', tag: 'test' }); res.json({ ok: true, sent }); }
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 

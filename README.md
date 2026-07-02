@@ -97,6 +97,22 @@ All configuration is via environment variables (see `.env.example`):
 | `APP_URL` | Public URL used in reminder emails / CORS |
 | `SMTP_*`, `CARD_REMINDER_*` | Optional credit-card settlement reminder emails |
 | `REQUIRE_CF_ACCESS`, `ALLOWED_EMAIL` | Optional Cloudflare Access enforcement |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional web-push keys — enable install-app notifications (`npx web-push generate-vapid-keys`) |
+
+## Install as an app (PWA)
+
+The app is installable — on a phone it runs full-screen with its own icon and no
+browser bars, and its shell works offline (it loads from cache and renders your
+locally-stored data; live bank data still needs the network).
+
+- **Install**: Android/Chrome — "Install app" from the browser menu. iPhone/Safari —
+  Share → "Add to Home Screen".
+- **Notifications** (optional): once you set the `VAPID_*` keys above, a "Notifications"
+  toggle appears in Settings. Enable it to get a push when the credit card is due to be
+  settled (this fires alongside the email reminder, if configured). Generate keys once
+  with `npx web-push generate-vapid-keys`, put them in your `.env`, and restart.
+- **iOS note**: web push only works once the app is added to the home screen, on
+  iOS 16.4+, and the site is served over HTTPS (`localhost` is exempt for testing).
 
 ## Where your data lives
 
