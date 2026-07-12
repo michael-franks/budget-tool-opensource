@@ -23,9 +23,17 @@ data) and, optionally, CoinGecko (to price any crypto holdings you choose to add
   bills account holds enough to cover upcoming fixed costs, and a student-loan
   tracker driven by your income deductions.
 - **Investments** — live KiwiSaver / managed-fund / wallet balances (and optional
-  self-custody crypto) with a simple compound-growth retirement projection.
+  self-custody crypto) with a simple compound-growth retirement projection. In
+  **retiree mode** this becomes a drawdown / longevity view instead: a real-terms
+  projection of how long your savings last, how sustainable your spending is, and
+  a balance-over-time chart to a plan-to age.
 - **Settle** — sync the bank, review new transactions, and work out how much each
   account should transfer to the credit card to settle it.
+- **Import history (CSV)** — bring in past transactions and running balances from a
+  bank statement export (Settings → Data, or the Settle screen) to build up your
+  spending history and balance graphs — useful for the period before you connected
+  Akahu. Auto-detects ANZ / ASB / BNZ / Westpac / Kiwibank column layouts, with a
+  manual column mapper and a live preview.
 - **Settings** — accounts, cards, budget categories, income earners and funding.
 
 ## Prerequisites
@@ -59,6 +67,24 @@ Akahu, or `curl -X POST http://localhost:3000/api/fetch`.
 
 There is also a `setup.sh` for installing it as a `systemd` service on a Linux
 host, if you want it running permanently.
+
+## Importing history from a CSV
+
+To give the app history from before you connected Akahu (or for accounts Akahu
+doesn't cover), import a bank CSV export — one account per file:
+
+1. In your online banking, export an account's transactions as CSV.
+2. In the app, go to **Settings → Data → Import history (CSV)** (or **Import CSV**
+   on the Settle screen) and choose the file.
+3. Tell it which account this is and its type; the columns (date, amount,
+   description, running balance) are auto-detected — check the preview and adjust
+   the mapping or tick "Flip signs" if the amounts look reversed.
+4. The transactions drop into the normal review screen (auto-categorised) where you
+   confirm and save them into your history. If the file has a running-balance
+   column, those balances feed the Balances-over-time graphs too.
+
+Imports de-duplicate against what you've already saved (and against Akahu), so
+re-importing or overlapping files won't double-count.
 
 ## Run with Docker
 
@@ -114,9 +140,11 @@ locally-stored data; live bank data still needs the network).
 
 Everything is stored as plain JSON in `DATA_DIR` (default `./data`):
 `transactions.json`, `accounts.json`, `state.json` (your budget config + ledger),
-`balance-log.json`, and `fetch-meta.json`. These files contain your financial
-data and are git-ignored — keep them private and back them up yourself. The
-budget config also caches in your browser's `localStorage`.
+`balance-log.json`, `fetch-meta.json`, `balance-history.json` (balances imported
+from CSVs), and `akahu-connection.json` (your bank tokens, if you connect in-app).
+These files contain your financial data and are git-ignored — keep them private
+and back them up yourself. The budget config also caches in your browser's
+`localStorage`.
 
 To track self-custody crypto (priced live via CoinGecko), create
 `DATA_DIR/crypto-holdings.json` as an array of `{ id, sym, amount }`, where `id`

@@ -412,6 +412,7 @@ body.modal-open { overflow: hidden; }
         <div style="display:flex;gap:8px;align-items:flex-end;padding-top:18px">
           <button class="btn btn-primary" onclick="akahuSync()" id="akahuSyncBtn">Sync transactions</button>
           <button class="btn" onclick="akahuFetchNew()" id="akahuFetchBtn" title="Tell server to fetch latest from Akahu first">Fetch &amp; sync</button>
+          <button class="btn" onclick="openCsvImport()" title="Import past transactions from a bank CSV">Import CSV</button>
         </div>
       </div>
       <div id="akahuStatus" style="font-size:12px;color:var(--muted);margin-top:8px;display:none"></div>
@@ -436,6 +437,15 @@ body.modal-open { overflow: hidden; }
     </div>
 
     <div id="settlementHistory"></div>
+    </div>
+  </div>
+
+  <!-- ═══ CSV STATEMENT IMPORT MODAL ═══ -->
+  <div id="csvImportModal" class="modal-overlay" onclick="if(event.target===this)closeCsvImport()">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeCsvImport()" aria-label="Close">&times;</button>
+      <div style="font-size:18px;font-weight:700;margin:2px 0 10px">Import history from a CSV</div>
+      <div id="csvImportBody"></div>
     </div>
   </div>
 
@@ -624,11 +634,13 @@ body.modal-open { overflow: hidden; }
       <summary><span class="s-arrow">&#9654;</span> Data</summary>
       <div class="section-body">
         <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="openCsvImport()">Import history (CSV)</button>
           <button class="btn" onclick="exportData()">Export all data (JSON)</button>
           <button class="btn" onclick="document.getElementById('importDataInput').click()">Import data (JSON)</button>
           <input type="file" id="importDataInput" accept=".json" onchange="importData(event)">
           <button class="btn btn-danger" onclick="clearAll()">Reset everything</button>
         </div>
+        <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Import history (CSV) pulls past transactions and balances from a bank statement export to build up your spending history and balance graphs.</p>
       </div>
     </details>
   </section>
@@ -825,6 +837,10 @@ function applyProfileSeeds(profile) {
   store.internalAccounts = retiree ? d.accounts.filter(a => a.type === 'positive').map(a => a.name) : [...DEFAULT_INTERNAL_ACCOUNTS];
   store.ownAccountPrefixes = [];
   store.funding = {};
+  // Seed retiree-appropriate horizon + drawdown assumptions so the longevity projection starts
+  // sensibly (already retired, planning to ~92). Set before migrateState so its household default
+  // (working-age 35/65/5) doesn't clobber these. Editable later in the drawdown card.
+  if (retiree) store.household = { currentAge: 67, retireAge: 67, kidAge: 5, planToAge: 92, retReturn: 4.5, retInflation: 2.5 };
   migrateState(store);   // re-derive funding, roles, household default, etc. for the new seed
 }
 
@@ -1795,21 +1811,125 @@ function invDrawDonut(canvasId, map) {
   }));
 }
 
-// Retiree drawdown stand-in (Phase 1): roughly how long total savings cover the spend-vs-income
-// gap. `savings` = all positive non-debt account balances + crypto. Fuller sim is Phase 2.
-function retireeSavingsCard(accounts, cryptoTotal) {
+// ── Retiree drawdown / longevity projection (Phase 2) ──
+// A real-terms annual simulation: savings grow at (return − inflation) and are drawn down by
+// (annual spend − income) each year, from the current age to a chosen "plan-to" age. Everything
+// is in today's dollars — NZ Super and spending both assumed to rise with inflation, so they
+// stay constant in real terms. Assumptions live in store.household and are editable in the card.
+function retireePlanToAge()   { const v = +hhold().planToAge;    return isFinite(v) && v > 0  ? v : 92; }
+function retireeReturnPct()   { const v = +hhold().retReturn;    return isFinite(v) && v >= 0 ? v : 4.5; }
+function retireeInflationPct(){ const v = +hhold().retInflation; return isFinite(v) && v >= 0 ? v : 2.5; }
+let _retireeDraw = null;   // {savings, superYr, spendYr} captured when the card renders
+let _retDrawChart = null;  // dedicated chart handle so input tweaks redraw without leaking
+function setRetireePlan(field, val) {
+  if (!store.household || typeof store.household !== 'object') store.household = {};
+  const n = String(val).trim() === '' ? null : parseFloat(val);
+  store.household[field] = (n != null && isFinite(n) && n >= 0 && n <= 120) ? n : null;
+  saveStore(store);
+  try { drawRetireeDrawdown(); } catch (e) {}
+}
+// Year-by-year real-terms balance path from the current age. Returns the age/balance series,
+// the age savings run out (or null), and the sustainable total spend that lasts exactly to plan.
+function simRetireeDrawdown(d) {
+  const startAge = projCurrentAge(), planAge = retireePlanToAge();
+  const realReturn = (retireeReturnPct() - retireeInflationPct()) / 100;
+  const netDrawReal = (d.spendYr || 0) - (d.superYr || 0);   // today's-$ shortfall drawn each year
+  const n = Math.max(0, Math.round(planAge - startAge));
+  const ages = [startAge], balances = [Math.max(0, d.savings || 0)];
+  let bal = Math.max(0, d.savings || 0), runOutAge = null;
+  for (let i = 1; i <= n; i++) {
+    bal = bal * (1 + realReturn) - netDrawReal;
+    const age = startAge + i;
+    if (bal <= 0 && runOutAge == null) { runOutAge = age; ages.push(age); balances.push(0); bal = 0; break; }
+    ages.push(age); balances.push(Math.max(0, bal));
+  }
+  // Sustainable total spend: the annuity the starting pot supports over n years at the real rate.
+  let sustainableSpend = null;
+  if (n > 0 && (d.savings || 0) > 0) {
+    const pmt = Math.abs(realReturn) < 1e-6 ? (d.savings / n)
+      : (d.savings * realReturn / (1 - Math.pow(1 + realReturn, -n)));
+    sustainableSpend = (d.superYr || 0) + pmt;
+  }
+  return { ages, balances, runOutAge, finalBalance: bal, netDrawReal, sustainableSpend, planAge, startAge, realReturn };
+}
+// Builds the card shell (headline + chart canvas + sustainable-spend note + editable assumptions).
+// Captures the money figures into _retireeDraw; drawRetireeDrawdown() fills the shell once mounted.
+function retireeDrawdownCard(accounts, cryptoTotal) {
   const savings = (accounts || []).filter(a => a.type !== 'CREDITCARD' && a.type !== 'LOAN' && (a.balance || 0) > 0).reduce((s, a) => s + (a.balance || 0), 0) + (cryptoTotal || 0);
   const spendYr = Object.values(store.budget || {}).filter(v => v && v.type !== 'unaccounted').reduce((s, v) => s + weeklyAmount(v), 0) * 52;
-  const incomeYr = (calcTotalNetWeekly(store.income) || 0) * 52;
-  const gap = spendYr - incomeYr;
+  const superYr = (calcTotalNetWeekly(store.income) || 0) * 52;
+  _retireeDraw = { savings, spendYr, superYr };
+  const h = store.household || {};
+  const inp = (label, key, ph, val, step, max) => `
+    <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)">
+      <span>${label}</span>
+      <input type="number" min="0" max="${max}" step="${step}" value="${val == null ? '' : val}" placeholder="${ph}"
+        oninput="setRetireePlan('${key}', this.value)"
+        style="width:82px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right;font-size:13px"></label>`;
+  return `<div class="card">
+    <h2 style="margin:0 0 2px">How long your savings last</h2>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 8px">A real-terms projection — savings grow with returns and are drawn down by the gap between spending and income each year. In today's dollars; a rough guide, not advice.</p>
+    <div id="retDrawHead" style="font-size:28px;font-weight:800;margin:2px 0 2px">—</div>
+    <div id="retDrawSub" style="font-size:12.5px;color:var(--muted);margin:0 0 8px"></div>
+    <div style="height:210px;margin:4px 0 12px"><canvas id="retDrawChart"></canvas></div>
+    <div id="retDrawSustain" style="font-size:13px;color:var(--text);background:rgba(37,99,235,0.08);border:1px solid var(--border);border-radius:8px;padding:9px 11px"></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px">
+      ${inp('Your age', 'currentAge', '67', h.currentAge, '1', '120')}
+      ${inp('Plan to age', 'planToAge', '92', h.planToAge, '1', '120')}
+      ${inp('Return % / yr', 'retReturn', '4.5', h.retReturn, '0.5', '30')}
+      ${inp('Inflation % / yr', 'retInflation', '2.5', h.retInflation, '0.1', '30')}
+    </div>
+  </div>`;
+}
+// Runs the sim against the mounted card: updates the headline/sub, the sustainable-spend note,
+// and (re)draws the balance-over-time chart. Safe to call on every assumption tweak.
+function drawRetireeDrawdown() {
+  if (_retDrawChart) { try { _retDrawChart.destroy(); } catch (e) {} _retDrawChart = null; }
+  const d = _retireeDraw; if (!d) return;
+  const headEl = document.getElementById('retDrawHead'); if (!headEl) return;   // card not mounted
+  const subEl = document.getElementById('retDrawSub'), sustEl = document.getElementById('retDrawSustain');
   const money = n => '$' + fmt(Math.round(n), 0);
+  if ((d.savings || 0) <= 0) {
+    headEl.textContent = 'Add your balances';
+    if (subEl) subEl.textContent = 'Connect your bank (Settings → Bank connection) or import your history to see how long your savings would last.';
+    if (sustEl) sustEl.innerHTML = '';
+    return;
+  }
+  const sim = simRetireeDrawdown(d);
   let head, sub;
-  if (savings <= 0) { head = 'Add your balances'; sub = 'Connect your bank (Settings → Bank connection) to see how long your savings would last.'; }
-  else if (gap <= 0) { head = 'Comfortably covered'; sub = 'Your income (' + money(incomeYr) + '/yr) covers your spending (' + money(spendYr) + '/yr), so your ' + money(savings) + ' in savings isn\'t being drawn down.'; }
-  else { const yrs = savings / gap; head = '~' + yrs.toFixed(1) + ' years'; sub = 'At ' + money(spendYr) + '/yr spending vs ' + money(incomeYr) + '/yr income, your ' + money(savings) + ' covers the ~' + money(gap) + '/yr shortfall for about ' + yrs.toFixed(1) + ' years. A fuller drawdown projection is coming soon.'; }
-  return '<div class="card"><h2 style="margin:0 0 2px">How your savings last</h2>' +
-    '<div style="font-size:28px;font-weight:800;margin:6px 0 4px">' + escapeHtml(head) + '</div>' +
-    '<p style="font-size:12px;color:var(--muted);margin:0">' + escapeHtml(sub) + ' A rough guide, not advice.</p></div>';
+  if (sim.netDrawReal <= 0) {
+    head = 'Fully covered by income';
+    sub = 'Your income (' + money(d.superYr) + '/yr) covers your spending (' + money(d.spendYr) + '/yr), so your ' + money(d.savings) + ' in savings keeps growing rather than being drawn down.';
+  } else if (sim.runOutAge != null) {
+    head = 'Lasts to age ~' + sim.runOutAge;
+    sub = 'At ' + money(d.spendYr) + '/yr spending and ' + money(d.superYr) + '/yr income, your ' + money(d.savings) + ' in savings runs out around age ' + sim.runOutAge + ' — about ' + (sim.runOutAge - sim.startAge) + ' years.';
+  } else {
+    head = 'Lasts beyond age ' + sim.planAge + ' ✓';
+    sub = 'At ' + money(d.spendYr) + '/yr spending and ' + money(d.superYr) + '/yr income, your savings still have about ' + money(sim.finalBalance) + ' left at age ' + sim.planAge + '.';
+  }
+  headEl.textContent = head;
+  if (subEl) subEl.textContent = sub;
+  if (sustEl) {
+    if (sim.sustainableSpend != null && sim.netDrawReal > 0) {
+      sustEl.innerHTML = '<strong>To make it last to age ' + sim.planAge + '</strong>, you could spend up to about <strong class="amt">' + money(sim.sustainableSpend) + '/yr</strong> (' + money(sim.sustainableSpend / 52) + '/wk) in total — including your ' + money(d.superYr) + '/yr income.';
+    } else if (sim.sustainableSpend != null) {
+      sustEl.innerHTML = 'Your savings could sustain about <strong class="amt">' + money(sim.sustainableSpend) + '/yr</strong> of total spending to age ' + sim.planAge + '.';
+    } else sustEl.innerHTML = '';
+  }
+  const ctx = document.getElementById('retDrawChart'); if (!ctx) return;
+  const pts = sim.ages.map((a, i) => ({ x: a, y: Math.round(sim.balances[i]) }));
+  _retDrawChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: [{ label: 'Savings', data: pts, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.14)', fill: true, tension: 0.25, borderWidth: 2.5, pointRadius: 0 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: items => items.length ? 'Age ' + items[0].parsed.x : '', label: c => pTip(c.parsed.y) } } },
+      scales: {
+        x: { type: 'linear', min: sim.startAge, max: sim.planAge, title: { display: true, text: 'Age', color: '#9ca3af', font: { size: 10 } }, ticks: { maxTicksLimit: 8, maxRotation: 0, font: { size: 9 }, color: '#9ca3af', callback: v => v }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { callback: pAxis, font: { size: 9 } }, grid: { color: 'rgba(120,130,145,0.18)' } }
+      }
+    }
+  });
 }
 
 async function renderInvestments() {
@@ -1817,6 +1937,7 @@ async function renderInvestments() {
   (investmentCharts || []).forEach(c => { try { c.destroy(); } catch (e) {} });
   investmentCharts = [];
   Object.keys(_projCharts).forEach(k => { if (_projCharts[k]) { try { _projCharts[k].destroy(); } catch (e) {} _projCharts[k] = null; } });
+  if (_retDrawChart) { try { _retDrawChart.destroy(); } catch (e) {} _retDrawChart = null; }
   const base = getAkahuUrl();
   let accounts = [], balLog = {}, cryptoTotal = 0, cryptoHoldings = [];
   if (base) {
@@ -1829,8 +1950,9 @@ async function renderInvestments() {
   const inv = accounts.filter(a => ['INVESTMENT', 'KIWISAVER', 'WALLET'].includes(a.type) && (a.currency || 'NZD') === 'NZD');
   if (!inv.length) {
     if (store.profile === 'retiree') {
-      el.innerHTML = html + retireeSavingsCard(accounts, cryptoTotal) +
+      el.innerHTML = html + retireeDrawdownCard(accounts, cryptoTotal) +
         '<p style="font-size:12px;color:var(--muted);margin-top:10px">Managed funds (Simplicity, Milford, Sharesies…) show here once connected via Akahu.</p>';
+      drawRetireeDrawdown();
     } else {
       el.innerHTML = html + '<div class="card"><h2 style="margin:0 0 6px">Nothing connected yet</h2><p style="color:var(--muted);font-size:13px;margin:0">Connect Sharesies, Simplicity, Milford and the like in your Akahu connection, then sync.</p></div>';
     }
@@ -1910,7 +2032,7 @@ async function renderInvestments() {
     </div>`).join('');
   const hasKids = _projBuckets.some(b => b.group === 'kids');
   if (store.profile === 'retiree') {
-    html += retireeSavingsCard(accounts, cryptoTotal);
+    html += retireeDrawdownCard(accounts, cryptoTotal);
   } else {
     html += `<div class="card">
     <h2 style="margin:0 0 2px">Retirement</h2>
@@ -1950,6 +2072,7 @@ async function renderInvestments() {
     }
   }
   recalcProjection();
+  if (store.profile === 'retiree') drawRetireeDrawdown();
 }
 
 // ═══ MORTGAGES ═══
@@ -2569,6 +2692,253 @@ function renderPendingPanel() {
       </tr>`).join('')}</tbody>
     </table></div>
   </div>`;
+}
+
+// ═══ CSV STATEMENT IMPORT ═══
+// Import historical transactions (and running balances) from a NZ bank CSV export into the SAME
+// pipeline as an Akahu sync: parse → map columns → categorise → review → save a period. Column
+// mapping auto-detects ANZ/ASB/BNZ/Westpac/Kiwibank by header keywords, with manual overrides and
+// a live preview. Balances (if the file has a running-balance column) post to /api/balance-history
+// for the Balances graphs. Nothing is saved until the user confirms in the review screen.
+let csvImport = null;   // { fileName, headers, data, map, dayFirst, flip, account, accType }
+const CSV_ACCT_TYPES = [['everyday', 'Everyday / cheque'], ['savings', 'Savings'], ['credit', 'Credit card'], ['term', 'Term deposit'], ['loan', 'Loan / mortgage'], ['investment', 'Investment / KiwiSaver']];
+
+function openCsvImport() {
+  csvImport = null;
+  const m = document.getElementById('csvImportModal'); if (!m) return;
+  m.classList.add('open'); document.body.classList.add('modal-open');
+  renderCsvImport();
+}
+function closeCsvImport() {
+  const m = document.getElementById('csvImportModal'); if (m) m.classList.remove('open');
+  csvImport = null;
+  if (!document.querySelector('.modal-overlay.open')) document.body.classList.remove('modal-open');
+}
+
+// RFC4180-ish: handles quoted fields, escaped "" quotes, CRLF, drops blank rows.
+function csvParseText(text) {
+  const t = String(text || '').replace(/\r\n?/g, '\n');
+  const rows = []; let field = '', row = [], inQ = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (inQ) { if (c === '"') { if (t[i + 1] === '"') { field += '"'; i++; } else inQ = false; } else field += c; }
+    else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c || '').trim() !== ''));
+}
+// Money: strips $ , spaces; (parens) and trailing DR = negative; CR = positive.
+function csvParseAmt(s) {
+  if (s == null) return null;
+  let str = String(s).trim(); if (!str) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(str)) { neg = true; str = str.slice(1, -1); }
+  if (/\bdr$/i.test(str)) neg = true;
+  str = str.replace(/[^0-9.\-]/g, '');
+  if (str === '' || str === '-' || str === '.' || str === '-.') return null;
+  const v = parseFloat(str); if (!isFinite(v)) return null;
+  return neg ? -Math.abs(v) : v;
+}
+// Dates: ISO (YYYY-MM-DD), or D/M/Y with a day-first default (NZ), self-correcting when a part > 12.
+function csvParseDate(s, dayFirst) {
+  const str = String(s == null ? '' : s).trim(); if (!str) return null;
+  // Build at UTC midnight so the calendar date survives toISOString()/date-only keys (local
+  // midnight would roll back a day in NZ's positive UTC offset). Display still uses en-NZ.
+  let m;
+  if ((m = str.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) { const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return isNaN(d.getTime()) ? null : d; }
+  if ((m = str.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/))) {
+    let a = +m[1], b = +m[2], y = +m[3]; if (y < 100) y += 2000;
+    let day, mon;
+    if (a > 12 && b <= 12) { day = a; mon = b; }
+    else if (b > 12 && a <= 12) { day = b; mon = a; }
+    else { day = dayFirst ? a : b; mon = dayFirst ? b : a; }
+    const d = new Date(Date.UTC(y, mon - 1, day)); return isNaN(d.getTime()) ? null : d;
+  }
+  const parsed = new Date(str); if (isNaN(parsed.getTime())) return null;   // "01 Jan 2026" etc.
+  return new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()));
+}
+// Find the header row (first with a date-ish cell) and auto-map columns by header keyword.
+function csvDetect(rows) {
+  // Header = first multi-column row with both a date-ish and a money-ish cell. This skips the
+  // preamble lines some banks (ASB) print above the real header, which can themselves say "date".
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 25); i++) {
+    const r = rows[i];
+    if (r.length >= 3 && r.some(c => /date/i.test(c)) && r.some(c => /amount|balance|payee|particular|debit|credit|description|memo/i.test(c))) { hi = i; break; }
+  }
+  if (hi < 0) for (let i = 0; i < Math.min(rows.length, 25); i++) { if (rows[i].some(c => /date/i.test(c))) { hi = i; break; } }
+  if (hi < 0) hi = 0;
+  const headers = rows[hi].map(h => String(h || '').trim());
+  const data = rows.slice(hi + 1).filter(r => r.length >= 2);
+  const lc = headers.map(h => h.toLowerCase());
+  const find = preds => { for (const p of preds) for (let i = 0; i < lc.length; i++) if (p(lc[i])) return i; return -1; };
+  const date = find([h => h === 'date', h => /date/.test(h) && !/process/.test(h), h => /date/.test(h)]);
+  const balance = find([h => h === 'balance', h => /balance/.test(h)]);
+  const amount = find([h => h === 'amount', h => /amount/.test(h) && !/foreign|conversion|credit|debit/.test(h)]);
+  const credit = find([h => /amount.*cred/.test(h), h => /credit/.test(h)]);
+  const debit = find([h => /amount.*deb/.test(h), h => /debit/.test(h)]);
+  const descRe = /payee|particular|reference|description|detail|memo|narrative|other party|op name|op ref|op part|tran type|analysis|code|source/;
+  const key = new Set([date, balance, amount, credit, debit]);
+  const descCols = []; lc.forEach((h, i) => { if (!key.has(i) && descRe.test(h)) descCols.push(i); });
+  return { headers, data, map: { date, amount, credit, debit, balance, desc: -1, descCols } };
+}
+function csvOnFile(e) {
+  const file = e.target.files && e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const rows = csvParseText(reader.result);
+      if (rows.length < 2) { toast('That file has no rows I can read'); return; }
+      const det = csvDetect(rows);
+      csvImport = { fileName: file.name, headers: det.headers, data: det.data, map: det.map, dayFirst: true, flip: false, account: '', accType: 'everyday' };
+      renderCsvImport();
+    } catch (err) { toast('Could not read that CSV'); }
+  };
+  reader.readAsText(file);
+}
+function csvSetMap(field, val) {
+  if (!csvImport) return;
+  const v = parseInt(val, 10), map = csvImport.map;
+  if (field === 'amount') map.amount = (v === -2 ? -1 : v);
+  else if (field === 'desc') map.desc = (v < 0 ? -1 : v);
+  else if (field === 'balance') map.balance = (v < 0 ? -1 : v);
+  else map[field] = v;
+  renderCsvImport();
+}
+function csvSetOpt(field, on) { if (!csvImport) return; csvImport[field] = !!on; renderCsvImport(); }
+function csvAmountOf(r, map) {
+  if (map.amount >= 0) { const v = csvParseAmt(r[map.amount]); if (v != null) return v; }
+  if (map.credit >= 0 || map.debit >= 0) {
+    const cr = map.credit >= 0 ? (csvParseAmt(r[map.credit]) || 0) : 0;
+    const db = map.debit >= 0 ? (csvParseAmt(r[map.debit]) || 0) : 0;
+    return cr - Math.abs(db);
+  }
+  return null;
+}
+function csvDescOf(r, map, headers) {
+  if (map.desc >= 0) return String(r[map.desc] || '').trim();
+  let cols = (map.descCols && map.descCols.length) ? map.descCols
+    : headers.map((_, i) => i).filter(i => ![map.date, map.amount, map.credit, map.debit, map.balance].includes(i));
+  const parts = [];
+  cols.forEach(i => { const v = String(r[i] || '').trim(); if (v && !parts.includes(v)) parts.push(v); });
+  return parts.join(' ');
+}
+// Turn mapped rows into internal transactions (the shape categorise/savePeriod expect).
+function csvBuildRows() {
+  if (!csvImport) return [];
+  const { data, map, headers, dayFirst, flip, account } = csvImport;
+  const out = [];
+  for (const r of data) {
+    const date = csvParseDate(r[map.date], dayFirst);
+    let amount = csvAmountOf(r, map);
+    if (date == null || amount == null) continue;
+    if (flip) amount = -amount;
+    const balance = map.balance >= 0 ? csvParseAmt(r[map.balance]) : null;
+    out.push({
+      date, detail: csvDescOf(r, map, headers) || 'Transaction', amount, account: (account || 'Imported'), balance,
+      txType: '', toFrom: '', reference: '', code: '', accountNum: '', owner: '', category: '', flagged: false,
+      akahuId: null, cardSuffix: null, merchantId: null, merchantHint: null, categoryHint: null, groupHint: null, pending: false,
+    });
+  }
+  return out;
+}
+// Post the running balances (one end-of-day point per day) for this account. Fire-and-forget.
+function csvPostBalances(account, built) {
+  const withBal = built.filter(t => t.balance != null && isFinite(t.balance));
+  if (!withBal.length) return;
+  const asc = withBal.length < 2 || withBal[0].date <= withBal[withBal.length - 1].date;
+  const byDay = new Map();
+  withBal.forEach(t => { const d = new Date(t.date).toISOString().slice(0, 10); if (asc) byDay.set(d, t.balance); else if (!byDay.has(d)) byDay.set(d, t.balance); });
+  const points = [...byDay.entries()].map(([date, balance]) => ({ date, balance }));
+  const base = getAkahuUrl(); if (!base) return;
+  fetch(base + '/api/balance-history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: account, points }) }).catch(() => {});
+}
+function csvDoImport() {
+  if (!csvImport) return;
+  const account = (csvImport.account || '').trim() || 'Imported';
+  csvImport.account = account;
+  const built = csvBuildRows();
+  if (!built.length) { toast('No transactions parsed — check the column mapping'); return; }
+  const { transactions: afterTransfers, transferCount } = filterTransfers(built);
+  // Dedup on a DATE-ONLY key (CSV dates are date-only; Akahu rows are timestamped) against saved
+  // history + whatever is already staged for review, plus within this file.
+  const keyOf = t => new Date(t.date).toISOString().slice(0, 10) + '|' + t.detail + '|' + t.amount;
+  const existing = new Set();
+  for (const p of store.periods) for (const t of (p.transactions || [])) existing.add(new Date(t.date).toISOString().slice(0, 10) + '|' + t.detail + '|' + t.amount);
+  for (const t of currentTransactions) existing.add(keyOf(t));
+  const seen = new Set(); let dupes = 0;
+  const fresh = afterTransfers.filter(t => { const k = keyOf(t); if (existing.has(k) || seen.has(k)) { dupes++; return false; } seen.add(k); return true; });
+  csvPostBalances(account, built);
+  if (!fresh.length) { closeCsvImport(); toast(dupes ? ('All ' + built.length + ' rows already imported') : 'Nothing new to import'); return; }
+  currentTransactions = currentTransactions.concat(categoriseTransactions(fresh)).sort((a, b) => b.date - a.date);
+  closeCsvImport();
+  openSettleModal();
+  renderImport();
+  toast('Added ' + fresh.length + ' transaction' + (fresh.length > 1 ? 's' : '') + ' to review'
+    + (dupes ? (' · skipped ' + dupes + ' duplicate' + (dupes > 1 ? 's' : '')) : '')
+    + (transferCount ? (' · ' + transferCount + ' transfer' + (transferCount > 1 ? 's' : '') + ' removed') : ''));
+}
+function csvSelect(field, current, extra) {
+  let html = '<select onchange="csvSetMap(\'' + field + '\', this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px">';
+  (extra || []).forEach(o => { html += '<option value="' + o[0] + '"' + (String(o[0]) === String(current) ? ' selected' : '') + '>' + escapeHtml(o[1]) + '</option>'; });
+  csvImport.headers.forEach((h, i) => { html += '<option value="' + i + '"' + (i === current ? ' selected' : '') + '>' + escapeHtml(h || ('Column ' + (i + 1))) + '</option>'; });
+  return html + '</select>';
+}
+function renderCsvImport() {
+  const el = document.getElementById('csvImportBody'); if (!el) return;
+  if (!csvImport) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:13px;line-height:1.55;margin:0 0 14px">Import your past transactions (and balances) from a bank CSV, to give the app history. In your online banking, export an account’s transactions as CSV, then choose the file here. Works with ANZ, ASB, BNZ, Westpac, Kiwibank and most others — <strong>one account per file</strong>.</p>'
+      + '<button class="btn btn-primary" onclick="document.getElementById(\'csvFileInput\').click()">Choose CSV file…</button>'
+      + '<input type="file" id="csvFileInput" accept=".csv,.txt" style="display:none" onchange="csvOnFile(event)">';
+    return;
+  }
+  const { headers, map, dayFirst, flip, accType } = csvImport;
+  const built = csvBuildRows();
+  const amtCur = (map.amount >= 0) ? map.amount : ((map.credit >= 0 || map.debit >= 0) ? -2 : -1);
+  const amtExtra = (map.credit >= 0 || map.debit >= 0) ? [[-2, '(auto: credit − debit)']] : [];
+  const nPos = built.filter(t => t.amount > 0).length, nNeg = built.filter(t => t.amount < 0).length;
+  const canImport = map.date >= 0 && (map.amount >= 0 || map.credit >= 0 || map.debit >= 0) && built.length > 0;
+  let signHint;
+  if (accType === 'credit' || accType === 'loan') signHint = 'For a ' + (accType === 'credit' ? 'credit card' : 'loan') + ', spending/charges should show as <strong>negative</strong>. If your purchases look positive below, tick “Flip signs”.';
+  else if (nPos > nNeg && built.length) signHint = 'Most amounts are positive — for an everyday/savings account, spending should be <strong>negative</strong>. If these are mostly purchases, tick “Flip signs”.';
+  else signHint = 'Spending should be negative, money-in positive. Tick “Flip signs” only if that looks reversed below.';
+  const acctNames = [...new Set((store.accounts || []).map(a => a.name).filter(Boolean))];
+  const preview = built.slice(0, 8).map(t => '<tr>'
+    + '<td style="padding:3px 8px;white-space:nowrap">' + t.date.toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: '2-digit' }) + '</td>'
+    + '<td style="padding:3px 8px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.detail) + '</td>'
+    + '<td class="amt" style="padding:3px 8px;text-align:right;white-space:nowrap;color:' + (t.amount < 0 ? 'var(--red)' : 'var(--green)') + '">' + (t.amount < 0 ? '-' : '') + '$' + fmt(Math.abs(t.amount)) + '</td>'
+    + '<td class="amt" style="padding:3px 8px;text-align:right;color:var(--muted);white-space:nowrap">' + (t.balance == null ? '' : '$' + fmt(t.balance)) + '</td></tr>').join('');
+  const fieldWrap = (label, inner) => '<div style="flex:1;min-width:150px"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + label + '</div>' + inner + '</div>';
+  el.innerHTML =
+    '<p style="font-size:13px;color:var(--muted);margin:0 0 12px">Found <strong>' + csvImport.data.length + '</strong> rows in <strong>' + escapeHtml(csvImport.fileName) + '</strong>. Tell me which account this is and check the columns below.</p>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+      + fieldWrap('This CSV is for account', '<input list="csvAcctList" value="' + escapeHtml(csvImport.account) + '" placeholder="e.g. Everyday" oninput="if(csvImport)csvImport.account=this.value" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px"><datalist id="csvAcctList">' + acctNames.map(n => '<option value="' + escapeHtml(n) + '">').join('') + '</datalist>')
+      + fieldWrap('Account type', '<select onchange="if(csvImport){csvImport.accType=this.value;renderCsvImport();}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px">' + CSV_ACCT_TYPES.map(t => '<option value="' + t[0] + '"' + (t[0] === accType ? ' selected' : '') + '>' + t[1] + '</option>').join('') + '</select>')
+    + '</div>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
+      + fieldWrap('Date column', csvSelect('date', map.date, []))
+      + fieldWrap('Amount column', csvSelect('amount', amtCur, amtExtra))
+    + '</div>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
+      + fieldWrap('Description column', csvSelect('desc', map.desc, [[-1, '(auto: combine detail columns)']]))
+      + fieldWrap('Balance column (optional)', csvSelect('balance', map.balance, [[-1, '(none)']]))
+    + '</div>'
+    + '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin:4px 0 10px;font-size:13px">'
+      + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox"' + (dayFirst ? ' checked' : '') + ' onchange="csvSetOpt(\'dayFirst\', this.checked)">Day first (DD/MM)</label>'
+      + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox"' + (flip ? ' checked' : '') + ' onchange="csvSetOpt(\'flip\', this.checked)">Flip signs</label>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin:0 0 10px">' + signHint + '</div>'
+    + '<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:6px"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<thead><tr style="background:var(--surface-2,rgba(120,130,145,0.08))"><th style="padding:5px 8px;text-align:left">Date</th><th style="padding:5px 8px;text-align:left">Description</th><th style="padding:5px 8px;text-align:right">Amount</th><th style="padding:5px 8px;text-align:right">Balance</th></tr></thead>'
+      + '<tbody>' + (preview || '<tr><td colspan="4" style="padding:8px;color:var(--muted)">No rows parsed — try a different Date or Amount column.</td></tr>') + '</tbody></table></div></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin:0 0 14px">' + built.length + ' of ' + csvImport.data.length + ' rows parsed' + (built.length > 8 ? ' (showing first 8)' : '') + '.</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="btn btn-primary"' + (canImport ? '' : ' disabled') + ' onclick="csvDoImport()">Import ' + built.length + ' transaction' + (built.length === 1 ? '' : 's') + ' → review</button>'
+      + '<button class="btn" onclick="csvImport=null;renderCsvImport()">Choose a different file</button>'
+    + '</div>';
 }
 
 function renderImport() {
@@ -4026,10 +4396,20 @@ async function renderAccountBalances() {
   try {
     const bh = ((await (await fetch(base + '/api/balance-history')).json()).history) || {};
     accounts.forEach(a => {
-      const pts = a.number && bh[a.number];
+      const pts = (a.number && bh[a.number]) || (a.name && bh[a.name]);   // imports key by number (Akahu) or name (CSV)
       if (!a.name || !pts || !pts.length) return;
       const arr = (histByAcct[a.name] = histByAcct[a.name] || []);
       pts.forEach(p => arr.push({ date: new Date(p.date), balance: p.balance }));
+    });
+    // Imported accounts with no live Akahu counterpart (CSV-only) — surface them anyway,
+    // anchored at their last imported balance so their history still charts.
+    Object.keys(bh).forEach(k => {
+      if (accounts.some(a => a.name === k || a.number === k)) return;
+      const pts = bh[k]; if (!Array.isArray(pts) || !pts.length) return;
+      const arr = (histByAcct[k] = histByAcct[k] || []);
+      pts.forEach(p => arr.push({ date: new Date(p.date), balance: p.balance }));
+      const last = pts[pts.length - 1];
+      accounts.push({ name: k, balance: last ? last.balance : 0, type: 'CHEQUE', bank: 'Imported', _imported: true });
     });
   } catch (e) {}
   // Anchor each account to its live current balance at "now" so the line reaches today.

@@ -657,6 +657,35 @@ app.get('/api/balance-history', (req, res) => {
   res.json({ ok: true, history: loadJSON(BALANCE_HISTORY_FILE, {}) });
 });
 
+// Merge imported historical balances for one account (from a CSV statement import).
+// Body: { key: "<account name or number>", points: [{date:"YYYY-MM-DD", balance:N}, …] }.
+// Idempotent per (key, date): re-importing the same statement just overwrites those days.
+app.post('/api/balance-history', (req, res) => {
+  try {
+    const body = req.body || {};
+    const key = (body.key == null ? '' : String(body.key)).trim();
+    const points = Array.isArray(body.points) ? body.points : null;
+    if (!key || !points) return res.status(400).json({ ok: false, error: 'bad_request' });
+    const hist = loadJSON(BALANCE_HISTORY_FILE, {});
+    const byDate = new Map();
+    (Array.isArray(hist[key]) ? hist[key] : []).forEach(p => {
+      if (p && p.date != null && p.balance != null) byDate.set(String(p.date).slice(0, 10), { date: String(p.date).slice(0, 10), balance: +p.balance });
+    });
+    let added = 0;
+    points.forEach(p => {
+      if (!p || p.date == null || p.balance == null) return;
+      const d = String(p.date).slice(0, 10), b = +p.balance;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !isFinite(b)) return;
+      byDate.set(d, { date: d, balance: b });
+      added++;
+    });
+    if (!added) return res.status(400).json({ ok: false, error: 'no_valid_points' });
+    hist[key] = [...byDate.values()].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).slice(-2000);
+    saveJSON(BALANCE_HISTORY_FILE, hist);
+    res.json({ ok: true, key, count: hist[key].length });
+  } catch (e) { res.status(500).json({ ok: false, error: 'server_error' }); }
+});
+
 // Daily snapshots of all account balances (date -> { accountId: balance }).
 app.get('/api/balance-log', (req, res) => {
   res.json({ ok: true, log: loadJSON(BALANCE_LOG_FILE, {}) });
