@@ -17,20 +17,11 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '127.0.0.1';   // localhost-only by default; set HOST=0.0.0.0 to expose (behind auth — see the startup warning)
 
 // ─── Akahu config ──────────────────────────────────────────────
+// Credentials come from env (AKAHU_APP_TOKEN / AKAHU_USER_TOKEN) OR are connected
+// in-app and stored in DATA_DIR/akahu-connection.json (see akahuTokens() below).
+// Env wins. The server starts fine with neither — it just reports "not connected"
+// until a bank is connected via POST /api/akahu/connect.
 const AKAHU_BASE = 'https://api.akahu.io/v1';
-const APP_TOKEN = process.env.AKAHU_APP_TOKEN;
-const USER_TOKEN = process.env.AKAHU_USER_TOKEN;
-
-if (!APP_TOKEN || !USER_TOKEN) {
-  console.error('ERROR: AKAHU_APP_TOKEN and AKAHU_USER_TOKEN must be set (see .env.example)');
-  process.exit(1);
-}
-
-const HEADERS = {
-  'Authorization': `Bearer ${USER_TOKEN}`,
-  'X-Akahu-Id': APP_TOKEN,
-  'Accept': 'application/json'
-};
 
 // ─── Data storage ──────────────────────────────────────────────
 // All JSON data files live here. Create it up front so the very first write
@@ -42,6 +33,25 @@ const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const META_FILE = path.join(DATA_DIR, 'fetch-meta.json');
 const BALANCE_HISTORY_FILE = path.join(DATA_DIR, 'balance-history.json');
 const BALANCE_LOG_FILE = path.join(DATA_DIR, 'balance-log.json');
+const AKAHU_CONN_FILE = path.join(DATA_DIR, 'akahu-connection.json');
+
+// Resolve the active Akahu credentials: env override, else the in-app connection file
+// (written by POST /api/akahu/connect). Returns null when nothing is connected.
+// loadJSON is a hoisted function declaration (defined below), so this is safe.
+function akahuTokens() {
+  if (process.env.AKAHU_APP_TOKEN && process.env.AKAHU_USER_TOKEN) {
+    return { appToken: process.env.AKAHU_APP_TOKEN, userToken: process.env.AKAHU_USER_TOKEN, source: 'env' };
+  }
+  const c = loadJSON(AKAHU_CONN_FILE, null);
+  if (c && c.appToken && c.userToken) return { appToken: c.appToken, userToken: c.userToken, source: 'file', connectedAt: c.connectedAt || null };
+  return null;
+}
+function akahuConnected() { return !!akahuTokens(); }
+function akahuHeaders(tok) {
+  const t = tok || akahuTokens();
+  if (!t) throw new Error('akahu_not_connected');
+  return { 'Authorization': `Bearer ${t.userToken}`, 'X-Akahu-Id': t.appToken, 'Accept': 'application/json' };
+}
 
 // Optional: manually-tracked self-custody crypto (no API), valued live via CoinGecko.
 // Ships empty. To track holdings WITHOUT editing source (keeps your balances out of
@@ -120,9 +130,10 @@ function withMeta(mutate) {
 
 // ─── Akahu API helpers ─────────────────────────────────────────
 
-async function akahu(endpoint, params = {}) {
+async function akahu(endpoint, params = {}, tok = null) {
   const url = new URL(`${AKAHU_BASE}${endpoint}`);
   Object.entries(params).forEach(([k, v]) => { if (v != null) url.searchParams.set(k, v); });
+  const headers = akahuHeaders(tok);   // throws 'akahu_not_connected' when no bank is connected
 
   // api.akahu.io (CloudFront) resolves to IPs across several subnets, and one of
   // them (13.226.59.0/24) is currently unroutable from this network — a connect to
@@ -132,7 +143,7 @@ async function akahu(endpoint, params = {}) {
   for (let attempt = 1; attempt <= 5; attempt++) {
     let res;
     try {
-      res = await fetch(url.toString(), { headers: HEADERS, signal: AbortSignal.timeout(7000) });
+      res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(7000) });
     } catch (e) {
       lastErr = e;
       const code = (e && (e.code || (e.cause && e.cause.code) || e.name)) || e.message;
@@ -508,6 +519,38 @@ app.get('/api/card-reminder', async (req, res) => {
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// ── Akahu bank connection (in-app; tokens stored in DATA_DIR, never returned raw) ──
+app.get('/api/akahu/status', (req, res) => {
+  const t = akahuTokens();
+  if (!t) return res.json({ connected: false });
+  const mask = (s) => (s && s.length > 12) ? (s.slice(0, 8) + '…' + s.slice(-4)) : '••••';
+  const accs = loadJSON(ACCOUNTS_FILE, []) || [];
+  const banks = [...new Set(accs.map(a => a.bank).filter(Boolean))];
+  res.json({ connected: true, source: t.source, connectedAt: t.connectedAt || null, accountCount: accs.length, banks, masked: { appToken: mask(t.appToken), userToken: mask(t.userToken) } });
+});
+app.post('/api/akahu/connect', async (req, res) => {
+  const appToken = ((req.body && req.body.appToken) || '').trim();
+  const userToken = ((req.body && req.body.userToken) || '').trim();
+  if (!appToken || !userToken) return res.status(400).json({ ok: false, error: 'Both the App ID Token and the User Access Token are required.' });
+  // Validate the supplied tokens against Akahu BEFORE persisting anything.
+  let accts;
+  try {
+    const data = await akahu('/accounts', {}, { appToken, userToken });
+    if (!data || !data.success) throw new Error('Akahu rejected the credentials');
+    accts = data.items || [];
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: 'Could not connect — double-check both tokens and that your bank is linked in Akahu.' });
+  }
+  try { saveJSON(AKAHU_CONN_FILE, { appToken, userToken, connectedAt: new Date().toISOString() }); }
+  catch (e) { return res.status(500).json({ ok: false, error: 'Validated, but could not save the connection: ' + e.message }); }
+  console.log('[akahu] connected in-app · ' + accts.length + ' account(s)');
+  res.json({ ok: true, accountCount: accts.length });
+});
+app.post('/api/akahu/disconnect', (req, res) => {
+  try { saveJSON(AKAHU_CONN_FILE, {}); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ── Web-push subscription management ──
 app.get('/api/push/vapid-public-key', (req, res) => {
   if (!pushConfigured()) return res.status(503).json({ ok: false, error: 'push not configured' });
@@ -533,6 +576,7 @@ app.post('/api/push/test', async (req, res) => {
 
 // Fetch transactions from Akahu (manual trigger from UI or cron script)
 app.post('/api/fetch', async (req, res) => {
+  if (!akahuConnected()) return res.status(409).json({ ok: false, error: 'not_connected' });
   try {
     console.log('[api] Manual fetch triggered');
     const result = await runFetch();
@@ -546,6 +590,7 @@ app.post('/api/fetch', async (req, res) => {
 // Refresh balances + investments only — pulls current account balances (and crypto)
 // and logs them, WITHOUT importing transactions / touching the settlement flow.
 app.post('/api/refresh-balances', async (req, res) => {
+  if (!akahuConnected()) return res.status(409).json({ ok: false, error: 'not_connected' });
   try {
     console.log('[api] Balance refresh triggered');
     const accounts = await fetchAccounts();

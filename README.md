@@ -31,13 +31,11 @@ data) and, optionally, CoinGecko (to price any crypto holdings you choose to add
 ## Prerequisites
 
 - [Node.js](https://nodejs.org) 18+ (20 LTS recommended).
-- An Akahu account with a **personal app** and your bank connected. Sign up and
-  create one at [my.akahu.nz](https://my.akahu.nz). From the developer dashboard
-  you will get two tokens for your app:
-  - an **App token** (`app_token_...`)
-  - a **User token** (`user_token_...`)
-
-  Akahu access here is read-only — the app never initiates payments.
+- An Akahu account with a **Personal App** and your bank connected. Sign up at
+  [my.akahu.nz](https://my.akahu.nz), connect your bank(s), and create a Personal App to
+  get its **App ID Token** (`app_token_...`) and **User Access Token** (`user_token_...`).
+  You paste these into the app on first run (or **Settings → Bank connection**) — **no
+  `.env` editing needed**. Akahu access is read-only; the app never initiates payments.
 
 ## Setup
 
@@ -45,14 +43,13 @@ data) and, optionally, CoinGecko (to price any crypto holdings you choose to add
 # 1. Install dependencies
 npm install
 
-# 2. Create your env file and fill in your Akahu tokens
+# 2. Create your env file (Akahu tokens are optional — you connect in-app)
 cp .env.example .env
-#    then edit .env and set AKAHU_APP_TOKEN and AKAHU_USER_TOKEN
 
 # 3. Start the server
 node server.js
 
-# 4. Open the app
+# 4. Open the app, then connect your bank in Settings → Bank connection
 #    http://localhost:3000
 ```
 

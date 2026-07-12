@@ -556,7 +556,7 @@ body.modal-open { overflow: hidden; }
     <details class="settings-section" open>
       <summary><span class="s-arrow">&#9654;</span> Income</summary>
       <div class="section-body">
-        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your base salary — used as a reference to show how you're tracking on one income.</p>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your regular income (salary, NZ Super, drawdown…) — used as a reference to show how you're tracking.</p>
         <div id="incomeSettings"></div>
       </div>
     </details>
@@ -603,6 +603,13 @@ body.modal-open { overflow: hidden; }
       <div class="section-body">
         <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Tracks when you update budget amounts.</p>
         <div id="costHistoryList"></div>
+      </div>
+    </details>
+
+    <details class="settings-section">
+      <summary><span class="s-arrow">&#9654;</span> Bank connection (Akahu)</summary>
+      <div class="section-body">
+        <div id="akahuConnection"></div>
       </div>
     </details>
 
@@ -762,6 +769,64 @@ const DEFAULTS = {
     'Partner A Spending', 'Partner B Spending', 'Unaccounted'
   ]
 };
+
+// Retiree profile seeds (used by applyProfileSeeds when profile==='retiree' at onboarding).
+// Deliberately NO Partner A/B accounts/categories — so the settlement engine has nothing to
+// split — and no mortgage / student-loan / KiwiSaver-contribution. A single joint pool with
+// NZ-Super + optional drawdown income.
+const RETIREE_DEFAULTS = {
+  accounts: [
+    { name: 'Everyday', type: 'positive' },
+    { name: 'Savings', type: 'positive' },
+    { name: 'Credit Card', type: 'negative' }
+  ],
+  cards: {},
+  budget: {
+    'Groceries': { amount: 250, freq: 'weekly', type: 'variable' },
+    'Power': { amount: 200, freq: 'monthly', type: 'variable' },
+    'Rates': { amount: 3500, freq: 'yearly', type: 'fixed' },
+    'Insurance': { amount: 250, freq: 'monthly', type: 'fixed' },
+    'Health/Medical': { amount: 120, freq: 'monthly', type: 'variable' },
+    'Phone': { amount: 50, freq: 'monthly', type: 'fixed' },
+    'Internet': { amount: 80, freq: 'monthly', type: 'fixed' },
+    'Petrol': { amount: 50, freq: 'weekly', type: 'variable' },
+    'Car upkeep': { amount: 1500, freq: 'yearly', type: 'variable' },
+    'Travel': { amount: 3000, freq: 'yearly', type: 'variable' },
+    'Subscriptions': { amount: 40, freq: 'monthly', type: 'fixed' },
+    'Unaccounted': { amount: 0, freq: 'weekly', type: 'unaccounted' }
+  },
+  income: {
+    earners: [
+      { name: 'NZ Super', gross: 1490, freq: 'fortnightly', note: 'NZ Super (couple, after tax) — edit to your rate', deductions: [] },
+      { name: 'Portfolio drawdown', gross: 0, freq: 'fortnightly', note: 'Optional — money you draw from savings', deductions: [] }
+    ]
+  },
+  groups: {},
+  categories: [
+    'Groceries', 'Power', 'Rates', 'Insurance', 'Health/Medical', 'Phone', 'Internet',
+    'Petrol', 'Car upkeep', 'Travel', 'Subscriptions', 'Unaccounted'
+  ]
+};
+
+// Seed the store for a chosen profile at FRESH onboarding (no periods/balances/settlements
+// yet). For 'retiree' this swaps in RETIREE_DEFAULTS; guarded so it can never wipe real data.
+function applyProfileSeeds(profile) {
+  store.profile = (profile === 'retiree') ? 'retiree' : 'household';
+  const fresh = !(store.periods && store.periods.length) && !(store.balances && store.balances.length) && !(store.settlements && store.settlements.length);
+  if (!fresh) return;   // never reseed once there's real history
+  const retiree = store.profile === 'retiree';
+  const d = retiree ? RETIREE_DEFAULTS : DEFAULTS;
+  store.accounts = d.accounts.map(a => ({ ...a }));
+  store.cards = JSON.parse(JSON.stringify(d.cards));
+  store.budget = JSON.parse(JSON.stringify(d.budget));
+  store.income = JSON.parse(JSON.stringify(d.income));
+  store.categories = [...d.categories];
+  store.groups = {};
+  store.internalAccounts = retiree ? d.accounts.filter(a => a.type === 'positive').map(a => a.name) : [...DEFAULT_INTERNAL_ACCOUNTS];
+  store.ownAccountPrefixes = [];
+  store.funding = {};
+  migrateState(store);   // re-derive funding, roles, household default, etc. for the new seed
+}
 
 // Convert old flat-number budgets to new {amount, freq, type} format
 function migrateBudget(budget) {
@@ -978,6 +1043,9 @@ function migrateState(s) {
   // Household ages that drive the retirement projection. Defaults reproduce the previous
   // hardcoded 30/60/25-year horizons, so existing users' projections do not change.
   if (!s.household || typeof s.household !== 'object') s.household = { currentAge: 35, retireAge: 65, kidAge: 5 };
+  // Profile: 'household' (working-age default) | 'retiree'. Defaulting here (never seeding)
+  // means every existing user stays 'household' unchanged; only onboarding sets 'retiree'.
+  if (s.profile !== 'retiree' && s.profile !== 'household') s.profile = 'household';
   if (s.onboarded === undefined) {
     s.onboarded = !!((s.periods && s.periods.length) || (s.balances && s.balances.length) || (s.settlements && s.settlements.length));
   }
@@ -1568,7 +1636,7 @@ async function renderHome() {
   const cardDueColor = cardDue.days <= 2 ? 'var(--red)' : cardDue.days <= 5 ? '#d97706' : 'var(--muted)';
   // Only show the settle card when there's actually a credit card to settle — otherwise it
   // renders a meaningless "$0 to settle" (and settlement is irrelevant with no shared card).
-  if (card) html += `<div class="card" style="border-left:4px solid var(--accent)">
+  if (card && store.profile !== 'retiree') html += `<div class="card" style="border-left:4px solid var(--accent)">
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Credit card</div>
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
       <div style="font-size:32px;font-weight:800">${m2(cardOwed)}<span style="font-size:14px;font-weight:500;color:var(--muted)"> to settle</span></div>
@@ -1727,6 +1795,23 @@ function invDrawDonut(canvasId, map) {
   }));
 }
 
+// Retiree drawdown stand-in (Phase 1): roughly how long total savings cover the spend-vs-income
+// gap. `savings` = all positive non-debt account balances + crypto. Fuller sim is Phase 2.
+function retireeSavingsCard(accounts, cryptoTotal) {
+  const savings = (accounts || []).filter(a => a.type !== 'CREDITCARD' && a.type !== 'LOAN' && (a.balance || 0) > 0).reduce((s, a) => s + (a.balance || 0), 0) + (cryptoTotal || 0);
+  const spendYr = Object.values(store.budget || {}).filter(v => v && v.type !== 'unaccounted').reduce((s, v) => s + weeklyAmount(v), 0) * 52;
+  const incomeYr = (calcTotalNetWeekly(store.income) || 0) * 52;
+  const gap = spendYr - incomeYr;
+  const money = n => '$' + fmt(Math.round(n), 0);
+  let head, sub;
+  if (savings <= 0) { head = 'Add your balances'; sub = 'Connect your bank (Settings → Bank connection) to see how long your savings would last.'; }
+  else if (gap <= 0) { head = 'Comfortably covered'; sub = 'Your income (' + money(incomeYr) + '/yr) covers your spending (' + money(spendYr) + '/yr), so your ' + money(savings) + ' in savings isn\'t being drawn down.'; }
+  else { const yrs = savings / gap; head = '~' + yrs.toFixed(1) + ' years'; sub = 'At ' + money(spendYr) + '/yr spending vs ' + money(incomeYr) + '/yr income, your ' + money(savings) + ' covers the ~' + money(gap) + '/yr shortfall for about ' + yrs.toFixed(1) + ' years. A fuller drawdown projection is coming soon.'; }
+  return '<div class="card"><h2 style="margin:0 0 2px">How your savings last</h2>' +
+    '<div style="font-size:28px;font-weight:800;margin:6px 0 4px">' + escapeHtml(head) + '</div>' +
+    '<p style="font-size:12px;color:var(--muted);margin:0">' + escapeHtml(sub) + ' A rough guide, not advice.</p></div>';
+}
+
 async function renderInvestments() {
   const el = document.getElementById('investmentsContent'); if (!el) return;
   (investmentCharts || []).forEach(c => { try { c.destroy(); } catch (e) {} });
@@ -1743,7 +1828,12 @@ async function renderInvestments() {
   if (!base) { el.innerHTML = html + '<div class="card"><p style="color:var(--muted);margin:0">Connect your server in the settings gear to see investments.</p></div>'; return; }
   const inv = accounts.filter(a => ['INVESTMENT', 'KIWISAVER', 'WALLET'].includes(a.type) && (a.currency || 'NZD') === 'NZD');
   if (!inv.length) {
-    el.innerHTML = html + '<div class="card"><h2 style="margin:0 0 6px">Nothing connected yet</h2><p style="color:var(--muted);font-size:13px;margin:0">Connect Sharesies, Simplicity, Milford and the like in your Akahu connection, then sync.</p></div>';
+    if (store.profile === 'retiree') {
+      el.innerHTML = html + retireeSavingsCard(accounts, cryptoTotal) +
+        '<p style="font-size:12px;color:var(--muted);margin-top:10px">Managed funds (Simplicity, Milford, Sharesies…) show here once connected via Akahu.</p>';
+    } else {
+      el.innerHTML = html + '<div class="card"><h2 style="margin:0 0 6px">Nothing connected yet</h2><p style="color:var(--muted);font-size:13px;margin:0">Connect Sharesies, Simplicity, Milford and the like in your Akahu connection, then sync.</p></div>';
+    }
     return;
   }
   const total = inv.reduce((s, a) => s + (a.balance || 0), 0) + cryptoTotal;
@@ -1819,7 +1909,10 @@ async function renderInvestments() {
       <span class="pr-grp" title="Regular contribution"><span class="pr-unit">+$</span><input class="pr-contrib" type="number" id="projContrib_${b.key}" value="${b.contrib || 0}" min="0" step="10" oninput="recalcProjection()"><select id="projFreq_${b.key}" onchange="recalcProjection()">${FREQS.map(f => `<option value="${f[0]}"${f[0] === (b.freq || 12) ? ' selected' : ''}>${f[1]}</option>`).join('')}</select></span>
     </div>`).join('');
   const hasKids = _projBuckets.some(b => b.group === 'kids');
-  html += `<div class="card">
+  if (store.profile === 'retiree') {
+    html += retireeSavingsCard(accounts, cryptoTotal);
+  } else {
+    html += `<div class="card">
     <h2 style="margin:0 0 2px">Retirement</h2>
     <p style="font-size:12px;color:var(--muted);margin:0 0 12px">Projected to retirement - a rough illustration; edit ages and rates to suit. Each holding grows at its own rate and can take a regular contribution — defaults are long-run averages, after fees, before tax. A rough estimate, not advice.</p>
     <div style="font-size:11px;color:var(--muted)">The household at retirement</div>
@@ -1827,6 +1920,7 @@ async function renderInvestments() {
     <div>${bucketRowsFor('us')}</div>
     <div style="height:220px;margin-top:10px"><canvas id="projChartUs"></canvas></div>
   </div>`;
+  }
   if (hasKids) {
     html += `<div class="card">
       <h2 style="margin:0 0 2px">Kids</h2>
@@ -1947,6 +2041,9 @@ function setSimRate(v) {
 function resetSim() { setSimTotal(currentWeeklyTotal()); setSimRate(0); }
 
 async function renderMortgages() {
+  const sec = document.getElementById('tab-mortgages');
+  if (store.profile === 'retiree') { if (sec) sec.style.display = 'none'; return; }   // retirees: no mortgage tools
+  if (sec) sec.style.display = '';
   const loans = MORTGAGE_TERMS.map(t => Object.assign({}, t));
   _mortgageLive = false;
   try {
@@ -4379,9 +4476,64 @@ function renderHousehold() {
 }
 
 // ═══ SETTINGS ═══
+// ── Bank connection (Akahu) settings ──
+function renderAkahuConnection() {
+  const el = document.getElementById('akahuConnection');
+  if (!el) return;
+  el.innerHTML = '<p style="font-size:13px;color:var(--muted)">Checking…</p>';
+  fetch(getAkahuUrl() + '/api/akahu/status').then(r => r.json()).then(s => {
+    if (s && s.connected) {
+      const banks = (s.banks && s.banks.length) ? s.banks.join(', ') : ((s.accountCount || 0) + ' account' + (s.accountCount === 1 ? '' : 's'));
+      const envNote = s.source === 'env' ? ' <span style="color:var(--muted)">(set on the server)</span>' : '';
+      el.innerHTML =
+        '<p style="font-size:13px;margin:0 0 10px"><span style="color:var(--green);font-weight:600">&#10003; Connected</span> — ' + escapeHtml(banks) + envNote + '</p>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-sm" onclick="akahuFetchNew()">Sync now</button>' +
+        (s.source === 'env' ? '' : '<button class="btn btn-sm btn-danger" onclick="akahuDisconnect()">Disconnect</button>') +
+        '</div>';
+    } else {
+      el.innerHTML = akahuConnectFormHtml('set');
+    }
+  }).catch(() => { el.innerHTML = '<p style="font-size:13px;color:var(--muted)">Could not reach the server.</p>'; });
+}
+function akahuConnectFormHtml(p) {
+  return `
+    <p style="font-size:13px;color:var(--muted);line-height:1.5;margin:0 0 10px">
+      Pull transactions in automatically via <strong>Akahu</strong> (read-only). One-time setup: at
+      <a href="https://my.akahu.nz" target="_blank" rel="noopener">my.akahu.nz</a>, connect your bank(s),
+      create a <strong>Personal App</strong>, then paste its two tokens below.</p>
+    <input id="${p}AkahuApp" placeholder="App ID Token (app_token_…)" autocomplete="off" style="width:100%;min-width:0;margin-bottom:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+    <input id="${p}AkahuUser" placeholder="User Access Token (user_token_…)" autocomplete="off" style="width:100%;min-width:0;margin-bottom:4px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+    <div id="${p}AkahuMsg" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:8px"></div>
+    <button class="btn btn-primary btn-sm" id="${p}AkahuBtn" onclick="akahuConnectSubmit('${p}')">Connect</button>`;
+}
+async function akahuConnectSubmit(p) {
+  p = p || 'set';
+  const app = ((document.getElementById(p + 'AkahuApp') || {}).value || '').trim();
+  const user = ((document.getElementById(p + 'AkahuUser') || {}).value || '').trim();
+  const msg = document.getElementById(p + 'AkahuMsg');
+  const setMsg = (t, err) => { if (msg) { msg.style.color = err ? 'var(--red)' : 'var(--muted)'; msg.textContent = t; } };
+  if (!app || !user) { setMsg('Paste both tokens.', true); return; }
+  const btn = document.getElementById(p + 'AkahuBtn'); if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+  try {
+    const r = await fetch(getAkahuUrl() + '/api/akahu/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appToken: app, userToken: user }) });
+    const j = await r.json();
+    if (!j.ok) { setMsg(j.error || 'Could not connect.', true); if (btn) { btn.disabled = false; btn.textContent = 'Connect'; } return; }
+    toast('Bank connected');
+    try { akahuFetchNew(); } catch (e) {}
+    renderAkahuConnection();
+  } catch (e) { setMsg('Network error — is the server reachable?', true); if (btn) { btn.disabled = false; btn.textContent = 'Connect'; } }
+}
+async function akahuDisconnect() {
+  if (!confirm('Disconnect your bank? Your existing transactions stay, but new syncs stop until you reconnect.')) return;
+  try { await fetch(getAkahuUrl() + '/api/akahu/disconnect', { method: 'POST' }); toast('Disconnected'); renderAkahuConnection(); }
+  catch (e) { toast('Could not disconnect'); }
+}
+
 function renderSettings() {
   renderHousehold();
   renderNotifications();
+  renderAkahuConnection();
   // Accounts
   document.getElementById('accountsList').innerHTML = store.accounts.map((a, i) => `
     <div class="setting-row">
@@ -5013,6 +5165,7 @@ function openWizard(mode) {
   wizardStep = 0;
   const internalLc = (store.internalAccounts || []).map(n => (n || '').toLowerCase());
   wizardDraft = {
+    profile: store.profile || 'household',
     accounts: (store.accounts || []).map(a => ({
       name: a.name || '',
       type: a.type === 'negative' ? 'negative' : 'positive',
@@ -5040,7 +5193,7 @@ function closeWizard() {
 }
 
 function wizardSteps() {
-  return wizardMode === 'firstrun' ? ['welcome', 'accounts'] : ['accounts', 'prefixes', 'budget'];
+  return wizardMode === 'firstrun' ? ['welcome', 'profile', 'connect', 'accounts'] : ['accounts', 'prefixes', 'budget'];
 }
 
 function renderWizard() {
@@ -5060,6 +5213,8 @@ function renderWizard() {
 
 function renderWizardStep(key) {
   if (key === 'welcome') return wizWelcome();
+  if (key === 'profile') return wizProfile();
+  if (key === 'connect') return wizConnect();
   if (key === 'accounts') return wizAccounts();
   if (key === 'prefixes') return wizPrefixes();
   if (key === 'budget') return wizBudget();
@@ -5069,26 +5224,87 @@ function renderWizardStep(key) {
 function wizWelcome() {
   return `
     <h2 style="font-size:20px;margin:0 0 8px">Welcome 👋</h2>
-    <p style="color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 12px">
-      This is a self-hosted budget tracker. Your data stays in your browser and on your own
-      server — nothing is sent anywhere else. It ships with a few <strong>example accounts and
-      categories</strong> so you can see how it looks.</p>
     <p style="color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 20px">
-      Let's take a minute to name your accounts. You can finish the rest of the setup (transfer
-      detection, budget amounts) any time from <strong>Settings → Setup wizard</strong>.</p>
-    <div style="display:flex;justify-content:space-between;gap:10px">
-      <button class="btn btn-sm" onclick="wizStartBlank()">Start blank instead</button>
-      <button class="btn btn-primary" onclick="wizNext()">Set up my accounts →</button>
+      This is your own private budget tracker — your data stays on your server, nothing is sent
+      anywhere else. Let's set it up in a few quick steps.</p>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn btn-primary" onclick="wizNext()">Get started →</button>
     </div>`;
 }
 
-function wizStartBlank() {
-  wizardDraft.accounts = [
-    { name: 'Everyday', type: 'positive', internal: true, prefix: '' },
-    { name: 'Savings', type: 'positive', internal: true, prefix: '' },
-    { name: 'Credit Card', type: 'negative', internal: false, prefix: '' }
-  ];
+// ── Step: who is this for (seeds starting categories/income) ──
+function wizProfile() {
+  const sel = wizardDraft.profile || 'household';
+  const card = (val, title, desc) => `
+    <button class="btn" onclick="wizPickProfile('${val}')" style="display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border:2px solid ${sel === val ? 'var(--accent)' : 'var(--border)'};border-radius:10px;background:var(--surface)">
+      <div style="font-weight:600;font-size:15px;margin-bottom:2px">${title}</div>
+      <div style="font-size:13px;color:var(--muted);line-height:1.45">${desc}</div>
+    </button>`;
+  return `
+    <h2 style="font-size:19px;margin:0 0 6px">Who's this for?</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 14px">Just sets sensible starting categories and income — you can change everything later.</p>
+    ${card('household', 'Working-age household', 'Salary / wages, KiwiSaver, a mortgage — the full toolkit.')}
+    ${card('retiree', 'Retired', 'NZ Super + drawdown income, simpler categories, no mortgage or KiwiSaver clutter, and a &ldquo;how long will it last&rdquo; view.')}
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-top:8px">
+      <button class="btn btn-sm" onclick="wizBack()">&larr; Back</button>
+      <button class="btn btn-primary" onclick="wizProfileNext()">Continue &rarr;</button>
+    </div>`;
+}
+function wizPickProfile(v) { wizardDraft.profile = v; renderWizard(); }
+function wizProfileNext() {
+  applyProfileSeeds(wizardDraft.profile || 'household');   // re-seeds the fresh store to the chosen profile
+  const internalLc = (store.internalAccounts || []).map(n => (n || '').toLowerCase());
+  wizardDraft.accounts = (store.accounts || []).map(a => ({
+    name: a.name || '', type: a.type === 'negative' ? 'negative' : 'positive',
+    internal: internalLc.includes((a.name || '').toLowerCase()), prefix: ''
+  }));
   wizNext();
+}
+
+// ── Step: connect a bank via Akahu (optional; skippable) ──
+function wizConnect() {
+  return `
+    <h2 style="font-size:19px;margin:0 0 6px">Connect your bank</h2>
+    <p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 10px">
+      Pull transactions in automatically via <strong>Akahu</strong> (NZ open banking, read-only).
+      One-time setup:</p>
+    <ol style="color:var(--muted);font-size:13px;line-height:1.6;margin:0 0 12px 18px;padding:0">
+      <li>At <a href="https://my.akahu.nz" target="_blank" rel="noopener">my.akahu.nz</a>, sign up and <strong>connect your bank(s)</strong>.</li>
+      <li>Create a <strong>Personal App</strong>; copy its <strong>App ID Token</strong> and <strong>User Access Token</strong>.</li>
+      <li>Paste them here.</li>
+    </ol>
+    <input id="wizAkahuApp" placeholder="App ID Token (app_token_…)" autocomplete="off" style="width:100%;min-width:0;margin-bottom:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+    <input id="wizAkahuUser" placeholder="User Access Token (user_token_…)" autocomplete="off" style="width:100%;min-width:0;margin-bottom:4px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+    <div id="wizAkahuMsg" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:8px"></div>
+    <div style="display:flex;justify-content:space-between;gap:10px">
+      <button class="btn btn-sm" onclick="wizBack()">&larr; Back</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" onclick="wizNext()">Skip for now</button>
+        <button class="btn btn-primary" id="wizAkahuBtn" onclick="wizConnectSubmit()">Connect &rarr;</button>
+      </div>
+    </div>`;
+}
+async function wizConnectSubmit() {
+  const app = ((document.getElementById('wizAkahuApp') || {}).value || '').trim();
+  const user = ((document.getElementById('wizAkahuUser') || {}).value || '').trim();
+  const msg = document.getElementById('wizAkahuMsg');
+  const setMsg = (t, err) => { if (msg) { msg.style.color = err ? 'var(--red)' : 'var(--muted)'; msg.textContent = t; } };
+  if (!app || !user) { setMsg('Paste both tokens, or use Skip for now.', true); return; }
+  const btn = document.getElementById('wizAkahuBtn'); if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+  try {
+    const r = await fetch(getAkahuUrl() + '/api/akahu/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appToken: app, userToken: user }) });
+    const j = await r.json();
+    if (!j.ok) { setMsg(j.error || 'Could not connect.', true); if (btn) { btn.disabled = false; btn.textContent = 'Connect →'; } return; }
+    // Auto-populate the accounts step from the real connected accounts.
+    try {
+      const accs = ((await (await fetch(getAkahuUrl() + '/api/accounts')).json()).accounts) || [];
+      if (accs.length) wizardDraft.accounts = accs.map(a => ({
+        name: a.name || '', type: (a.type === 'CREDITCARD' || a.type === 'LOAN') ? 'negative' : 'positive',
+        internal: a.type !== 'CREDITCARD', prefix: ''
+      }));
+    } catch (e) {}
+    wizNext();
+  } catch (e) { setMsg('Network error — is the server reachable?', true); if (btn) { btn.disabled = false; btn.textContent = 'Connect →'; } }
 }
 
 function wizAccounts() {
@@ -5185,11 +5401,12 @@ function wizFinish(openBudget) {
   if (prefixes.length) {
     store.ownAccountPrefixes = Array.from(new Set([...(store.ownAccountPrefixes || []), ...prefixes]));
   }
+  store.profile = (wizardDraft.profile === 'retiree') ? 'retiree' : 'household';
   store.onboarded = true;
   saveStore(store);
   closeWizard();
   try { showTab(openBudget ? 'settings' : (_activeTab || 'home')); } catch (e) {}
-  toast(mode === 'firstrun' ? 'Accounts saved — welcome aboard!' : 'Setup saved');
+  toast(mode === 'firstrun' ? 'All set — welcome aboard!' : 'Setup saved');
   if (openBudget) {
     try {
       const el = document.getElementById('budgetList');

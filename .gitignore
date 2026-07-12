@@ -10,3 +10,6 @@ accounts.json
 fetch-meta.json
 balance-history.json
 balance-log.json
+akahu-connection.json
+crypto-holdings.json
+push-subscriptions.json
